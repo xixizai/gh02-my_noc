@@ -4,53 +4,53 @@
 // debug测试模块，可打印包的路径。
 // 也可测试 整个网络（network）总的 Tx 和 Rx, 和在 MEASURE_PACKETS 阶段的 Tx 和 Rx, 吞吐率, 包时延。
 
-module tb_network_debug3
+module tb_network_debug
 #(
    parameter CLK_PERIOD = 100ps,
    parameter integer PACKET_RATE = 1, // Offered traffic as percent of capacity
-
+   
    parameter integer WARMUP_PACKETS = `warmup_packets_num, // Number of packets to warm-up the network
    parameter integer MEASURE_PACKETS = `warmup_packets_num*5, // Number of packets to be measured
    parameter integer DRAIN_PACKETS = `warmup_packets_num*3, // Number of packets to drain the network
-
+  
    parameter integer NODE_QUEUE_DEPTH = `INPUT_QUEUE_DEPTH * 8,
    parameter integer RUNNING_TIME = 10000,
 	parameter logic debug = 1 //if(debug==1), 一个cycle只发送一个packet，以便观察
 );
 
    // ================================================================================================================================
-
+	
    logic clk;
    logic reset_n;
-
+   
    longint  f_time;   // 计算时钟周期数（时间）
    longint  f_time_begin;  // 记录开始时间（最初的复位时间）
    logic    [7:0] packet_count;  // 对仿真生成的包进行计数，可用来标记每个包的id
-
+	
    // 链接network模块端口的变量定义 -------------------------------------------------
    //packet_t [0:`NODES-1] l_data_FFtoN;     // 输入，包，fifo -> network 中的对应路由
    //logic    [0:`NODES-1] l_data_val_FFtoN; // 输入，包信号，fifo -> network 中的对应路由
-   //logic    [0:`NODES-1] l_en_NtoFF;       // 输出，对应路由的使能信号，network -> fifo
-
+   //logic    [0:`NODES-1][3:0] l_en_NtoFF;       // 输出，对应路由的使能信号，network -> fifo
+   
    packet_t [0:`NODES-1] o_data_N;     // 输出，包，network -> testbench 仿真PE结点
    logic    [0:`NODES-1] o_data_val_N; // 输出，包信号，network -> testbench 仿真PE结点
-
+   
    // 链接fifo模块（属于仿真的PE结点）端口的变量定义 ---------------------------------
    packet_t [0:`NODES-1] i_data_FF;     // 输入，仿真包，testbench 仿真PE结点-> fifo
    logic    [0:`NODES-1] i_data_val_FF; // 输入，仿真包信号，testbench 仿真PE结点-> fifo
-   logic    [0:`NODES-1] l_en_NtoFF;    // 输入，对应路由的使能信号，network -> fifo
-
+   logic    [0:`NODES-1][3:0] l_en_NtoFF;    // 输入，对应路由的使能信号，network -> fifo
+   
    packet_t [0:`NODES-1] l_data_FFtoN;    // 输出，包，fifo -> network 中的对应路由
    logic    [0:`NODES-1] l_data_val_FFtoN;// 输出，包信号，fifo -> network 中的对应路由
-   logic    [0:`NODES-1] o_en_FF;         // 输出，fifo模块的使能信号，fifo->testbench 仿真PE结点
-
+   logic    [0:`NODES-1][3:0] o_en_FF;         // 输出，fifo模块的使能信号，fifo->testbench 仿真PE结点
+   
    // 值为随机生成的变量 --------------------------------------
 	int rand_i;
    logic [0:`NODES-1] rand_data_val; // 根据包注入率随机生成0或1，如果等于1则赋予数据包有效
    logic [0:`NODES-1][$clog2(`X_NODES)-1:0] rand_x_dest; // 随机生成数据包的x坐标
    logic [0:`NODES-1][$clog2(`Y_NODES)-1:0] rand_y_dest; // 随机生成数据包的y坐标
 
-
+	
    // =================================================== 测试变量 ==============================================================
 
    //记录 总的 Tx 和 Rx --------------------------------------------------------------------------------------------------
@@ -127,11 +127,11 @@ module tb_network_debug3
       integer f_max_latency_backward;// 最长时延，backward ant包
    longint current_packet_latency;// 当前包时延
    //integer f_latency_frequency [0:99]; // The amount of times a single latency occurs
-
-
+	
+	
    // ================================================ 从子模块里引出的变量 ===========================================================
-
-   logic    [0:`NODES-1][0:`N-1] test_en_SCtoFF;
+	
+   logic    [0:`NODES-1][0:`N-1][3:0] test_en_SCtoFF;
    // FFtoAA ---------------------------------------------------------------------
    packet_t [0:`NODES-1][0:`N-1] test_data_FFtoAA;
    logic    [0:`NODES-1][0:`N-1] test_data_val_FFtoAA;
@@ -152,22 +152,22 @@ module tb_network_debug3
    logic    [0:`NODES-1][0:`PH_TABLE_DEPTH-1] test_max_pheromone_value;
    logic    [0:`NODES-1][0:`PH_TABLE_DEPTH-1] test_min_pheromone_value;
    logic [0:`NODES-1][0:`N-1][0:`M-1][1:0] test_avail_directions;
-
+	
    // ================================================== 生成 network 模块 ===========================================================
-
+  
    network network(
-						.clk(clk),
-						.reset_n(reset_n),
+						.clk(clk), 
+						.reset_n(reset_n), 
 
                                                 // 带fifo模块
-						.i_data(l_data_FFtoN),
+						.i_data(l_data_FFtoN), 
 						.i_data_val(l_data_val_FFtoN),
 						.o_en(l_en_NtoFF),
 						.o_data(o_data_N),
 						.o_data_val(o_data_val_N),
 
 						// 不带fifo模块
-//						.i_data(i_data_FF),
+//						.i_data(i_data_FF), 
 //						.i_data_val(i_data_val_FF),
 //						.o_en(o_en_FF),
 //						.o_data(o_data_N),
@@ -175,29 +175,29 @@ module tb_network_debug3
 
 						// ---------------------------------------------
 						.test_en_SCtoFF(test_en_SCtoFF),
-
+						
 						.test_data_FFtoAA(test_data_FFtoAA),
-						.test_data_val_FFtoAA(test_data_val_FFtoAA),
-
+						.test_data_val_FFtoAA(test_data_val_FFtoAA), 
+						
 						.test_data_AAtoSW(test_data_AAtoSW),
-
+						
 						.test_output_req_AAtoSC(test_output_req_AAtoSC),
-
+						
 						.test_l_req_matrix_SC(test_l_req_matrix_SC),
-
-
+						
+						
 		            .test_l_output_req(test_l_output_req),
                   .test_routing_calculate(test_routing_calculate),
 						.test_update(test_update),
 						.test_select_neighbor(test_select_neighbor),
 						.test_tb_o_output_req(test_tb_o_output_req),
-
+						
 						.test_pheromones(test_pheromones),
 						.test_max_pheromone_value(test_max_pheromone_value),
 						.test_min_pheromone_value(test_min_pheromone_value),
                   .test_avail_directions(test_avail_directions)
    );
-
+   
    // ============================================= 生成 各PE结点的 FIFO 模块 ===========================================================
    genvar i;
    generate
@@ -207,7 +207,7 @@ module tb_network_debug3
                              .clk(clk),
                              .ce(1'b1),
                              .reset_n(reset_n),
-                             .i_data(i_data_FF[i]),
+                             .i_data(i_data_FF[i]),      
                              .i_data_val(i_data_val_FF[i]),    //f_data_val[i]
                              .i_en(l_en_NtoFF[i]),
                              .o_data(l_data_FFtoN[i]),         //l_data_FFtoN
@@ -216,11 +216,11 @@ module tb_network_debug3
 									 );
       end
    endgenerate
-
+  
    // =================================================== 仿真数据生成 ==============================================================
-
+   
    // 中间变量的生成（随机地） ------------------------------------------------------
-
+	
    // 随机目的地 ------------------
    always_ff@(posedge clk) begin
       if(~reset_n) begin
@@ -256,7 +256,7 @@ module tb_network_debug3
          end
       end
    end
-
+	
    // input data of network generation
    // -------------------------------------------------------------
    always_ff@(negedge clk) begin
@@ -266,25 +266,25 @@ module tb_network_debug3
          for(int y = 0; y < `Y_NODES; y++) begin
             for(int x = 0; x < `X_NODES; x++) begin
                i_data_val_FF[y*`X_NODES + x] <= 0;
-
+ 
                i_data_FF[y*`X_NODES + x].id <= 0;
-
-               i_data_FF[y*`X_NODES + x].x_source <= x;
-               i_data_FF[y*`X_NODES + x].y_source <= y;
-               i_data_FF[y*`X_NODES + x].x_dest <= 0;
-               i_data_FF[y*`X_NODES + x].y_dest <= 0;
-
+    
+               i_data_FF[y*`X_NODES + x].x_source <= x; 
+               i_data_FF[y*`X_NODES + x].y_source <= y; 
+               i_data_FF[y*`X_NODES + x].x_dest <= 0; 
+               i_data_FF[y*`X_NODES + x].y_dest <= 0; 
+ 
                i_data_FF[y*`X_NODES + x].ant <= 0;
                i_data_FF[y*`X_NODES + x].backward <= 0;
-
+ 
                i_data_FF[y*`X_NODES + x].x_memory <= 0;
                i_data_FF[y*`X_NODES + x].y_memory <= 0;
                i_data_FF[y*`X_NODES + x].num_memories <= 0;
-
+ 
                i_data_FF[y*`X_NODES + x].b_x_memory <= 0;
                i_data_FF[y*`X_NODES + x].b_y_memory <= 0;
                i_data_FF[y*`X_NODES + x].b_num_memories <= 0;
-
+            
                i_data_FF[y*`X_NODES + x].measure <= 0;
                i_data_FF[y*`X_NODES + x].timestamp <= 0;
             end
@@ -294,18 +294,18 @@ module tb_network_debug3
             if (f_time % 10 == 0) begin
             //if (f_time == 10) begin
                i_data_val_FF[rand_i] <= 1;
-
+			      
                i_data_FF[rand_i].id <= packet_count;
                packet_count <= packet_count + 1;
-
+					
                if(f_time % 20 == 0)begin
                   i_data_FF[rand_i].ant <= 0;
                end else begin
                   i_data_FF[rand_i].ant <= 1;
                end
-               i_data_FF[rand_i].x_dest <= rand_x_dest[rand_i];
-               i_data_FF[rand_i].y_dest <= rand_y_dest[rand_i];
-
+               i_data_FF[rand_i].x_dest <= rand_x_dest[rand_i]; 
+               i_data_FF[rand_i].y_dest <= rand_y_dest[rand_i]; 
+					
             end else begin
                for(int i=0; i<`NODES; i++) begin
                   i_data_val_FF[i] <= 0;
@@ -318,12 +318,12 @@ module tb_network_debug3
 
             for(int i=0; i<`NODES; i++) begin
                i_data_val_FF[i] <= rand_data_val[i] && o_en_FF[i];
-
+   
                i_data_FF[i].id <= packet_count * `NODES + i;
                i_data_FF[i].x_dest <= rand_x_dest[i];
                i_data_FF[i].y_dest <= rand_y_dest[i];
                i_data_FF[i].timestamp <= f_time;
-
+				
                if(f_time % 2 == 0)begin
                   i_data_FF[i].ant <= 0;
                end else begin
@@ -344,7 +344,7 @@ module tb_network_debug3
 		$display(" ");
  */
    end // always_ff
-
+	
    // ====================================================== Calculation =========================================================
    //parameter integer WARMUP_PACKETS = 1000, // Number of packets to warm-up the network
    //parameter integer MEASURE_PACKETS = 5000, // Number of packets to be measured
@@ -361,19 +361,19 @@ module tb_network_debug3
             f_port_i_data_count_ant[i]      <= 0;// 各个PE结点发往network的 ant包的数量
             f_port_i_data_count_forward[i]  <= 0;// 各个PE结点发往network的 forward ant包的数量
             f_port_i_data_count_backward[i] <= 0;// 各个PE结点发往network的 backward ant包的数量
-
+				
             f_port_o_data_count_all[i]      <= 0;// 各个PE结点从network接收到的 包的数量
             f_port_o_data_count_normal[i]   <= 0;// 各个PE结点从network接收到的 普通包的数量
             f_port_o_data_count_ant[i]      <= 0;// 各个PE结点从network接收到的 ant包的数量
             f_port_o_data_count_forward[i]  <= 0;// 各个PE结点从network接收到的 forward ant包的数量
             f_port_o_data_count_backward[i] <= 0;// 各个PE结点从network接收到的 backward ant包的数量
-         end
+         end          
       end else begin
          for(int i=0; i<`NODES; i++) begin
             if(l_data_val_FFtoN[i])begin
             //TX
                f_port_i_data_count_all[i] <= f_port_i_data_count_all[i] + 1; //所有包
-
+               
                if(l_data_FFtoN[i].ant == 0) begin
                   f_port_i_data_count_normal[i] <= f_port_i_data_count_normal[i] + 1; //普通包
                end else begin//（生成一个ant包时，不仅ant包+1，forward ant包、backward ant包也各+1）
@@ -391,7 +391,7 @@ module tb_network_debug3
                   if(o_data_N[i].b_num_memories == 0) begin//（源地址==目的地地址的包，forward和backward两种类型的ant包都在第一结点到达目的地）
                      f_port_o_data_count_all[i] <= f_port_o_data_count_all[i] + 1;//所有包
                      f_port_o_data_count_ant[i] <= f_port_o_data_count_ant[i] + 1;//ant包
-
+                     
                      f_port_o_data_count_forward[i] <= f_port_o_data_count_forward[i] + 1;//forward ant包
                      f_port_o_data_count_backward[i] <= f_port_o_data_count_backward[i] + 1;//backward ant包
                   end else begin
@@ -400,7 +400,7 @@ module tb_network_debug3
                      end else begin // （backward类型的ant包到达目的地）
                         f_port_o_data_count_all[i] <= f_port_o_data_count_all[i] + 1;//所有包
                         f_port_o_data_count_ant[i] <= f_port_o_data_count_ant[i] + 1;//ant包
-
+                        
                         f_port_o_data_count_backward[i] <= f_port_o_data_count_backward[i] + 1;//backward ant包
                      end
                   end
@@ -416,7 +416,7 @@ module tb_network_debug3
       f_total_i_data_count_ant      = 0; // 所有PE结点发往network的 ant包的总数量
       f_total_i_data_count_forward  = 0; // 所有PE结点发往network的 forward ant包的总数量
       f_total_i_data_count_backward = 0; // 所有PE结点发往network的 backward ant包的总数量
-
+		
       f_total_o_data_count_all      = 0; // 所有PE结点从network接收到的 包的总数量
       f_total_o_data_count_normal   = 0; // 所有PE结点从network接收到的 普通包的总数量
       f_total_o_data_count_ant      = 0; // 所有PE结点从network接收到的 ant包的总数量
@@ -428,7 +428,7 @@ module tb_network_debug3
          f_total_i_data_count_ant = f_port_i_data_count_ant[i] + f_total_i_data_count_ant;
          f_total_i_data_count_forward = f_port_i_data_count_forward[i] + f_total_i_data_count_forward;
          f_total_i_data_count_backward = f_port_i_data_count_backward[i] + f_total_i_data_count_backward;
-
+			
          f_total_o_data_count_all = f_port_o_data_count_all[i] + f_total_o_data_count_all;
          f_total_o_data_count_normal = f_port_o_data_count_normal[i] + f_total_o_data_count_normal;
          f_total_o_data_count_ant = f_port_o_data_count_ant[i] + f_total_o_data_count_ant;
@@ -446,7 +446,7 @@ module tb_network_debug3
             f_measure_port_i_packet_count_ant[i]      <= 0;
             f_measure_port_i_packet_count_forward[i]  <= 0;
             f_measure_port_i_packet_count_backward[i] <= 0;
-
+				
             f_measure_port_o_packet_count_all[i]      <= 0;
             f_measure_port_o_packet_count_normal[i]   <= 0;
             f_measure_port_o_packet_count_ant[i]      <= 0;
@@ -455,26 +455,26 @@ module tb_network_debug3
          end
       end else begin
          for(int i=0; i<`NODES; i++) begin
-            if(l_data_val_FFtoN[i] && (f_total_i_data_count_all >= WARMUP_PACKETS)
+            if(l_data_val_FFtoN[i] && (f_total_i_data_count_all >= WARMUP_PACKETS) 
                                    && (f_total_i_data_count_all < (WARMUP_PACKETS + MEASURE_PACKETS)))begin
                f_measure_port_i_packet_count_all[i] <= f_measure_port_i_packet_count_all[i] + 1;
-
+                  
                if(l_data_FFtoN[i].ant == 0) begin
                   f_measure_port_i_packet_count_normal[i] <= f_measure_port_i_packet_count_normal[i] + 1;
                end else begin
                   f_measure_port_i_packet_count_ant[i] <= f_measure_port_i_packet_count_ant[i] + 1;
-
+            
                   f_measure_port_i_packet_count_forward[i] <= f_measure_port_i_packet_count_forward[i] + 1;
                   f_measure_port_i_packet_count_backward[i] <= f_measure_port_i_packet_count_backward[i] + 1;
                end
             end
-            if(o_data_val_N[i] && (f_total_o_data_count_all >= WARMUP_PACKETS)
+            if(o_data_val_N[i] && (f_total_o_data_count_all >= WARMUP_PACKETS) 
                                && (f_total_o_data_count_all < (WARMUP_PACKETS + MEASURE_PACKETS)))begin
                if(o_data_N[i].ant == 0) begin
                   f_measure_port_o_packet_count_all[i] <= f_measure_port_o_packet_count_all[i] + 1;
                   f_measure_port_o_packet_count_normal[i] <= f_measure_port_o_packet_count_normal[i] + 1;
                end else begin
-
+            
                   if(o_data_N[i].b_num_memories == 0) begin
                      f_measure_port_o_packet_count_all[i] <= f_measure_port_o_packet_count_all[i] + 1;
                      f_measure_port_o_packet_count_ant[i] <= f_measure_port_o_packet_count_ant[i] + 1;
@@ -496,20 +496,20 @@ module tb_network_debug3
          end
       end
    end
-
+   
    always_comb begin
       f_measure_total_i_packet_count_all      = 0;
       f_measure_total_i_packet_count_normal   = 0;
       f_measure_total_i_packet_count_ant      = 0;
       f_measure_total_i_packet_count_forward  = 0;
       f_measure_total_i_packet_count_backward = 0;
-
+		
       f_measure_total_o_packet_count_all      = 0;
       f_measure_total_o_packet_count_normal   = 0;
       f_measure_total_o_packet_count_ant      = 0;
       f_measure_total_o_packet_count_forward  = 0;
       f_measure_total_o_packet_count_backward = 0;
-
+      
 
       for (int i=0; i<`NODES; i++) begin
          f_measure_total_i_packet_count_all = f_measure_port_i_packet_count_all[i] + f_measure_total_i_packet_count_all;
@@ -517,7 +517,7 @@ module tb_network_debug3
          f_measure_total_i_packet_count_ant = f_measure_port_i_packet_count_ant[i] + f_measure_total_i_packet_count_ant;
          f_measure_total_i_packet_count_forward = f_measure_port_i_packet_count_forward[i] + f_measure_total_i_packet_count_forward;
          f_measure_total_i_packet_count_backward = f_measure_port_i_packet_count_backward[i] + f_measure_total_i_packet_count_backward;
-
+			
          f_measure_total_o_packet_count_all = f_measure_port_o_packet_count_all[i] + f_measure_total_o_packet_count_all;
          f_measure_total_o_packet_count_normal = f_measure_port_o_packet_count_normal[i] + f_measure_total_o_packet_count_normal;
          f_measure_total_o_packet_count_ant = f_measure_port_o_packet_count_ant[i] + f_measure_total_o_packet_count_ant;
@@ -525,7 +525,7 @@ module tb_network_debug3
          f_measure_total_o_packet_count_backward = f_measure_port_o_packet_count_backward[i] + f_measure_total_o_packet_count_backward;
       end
    end
-
+   
    // 测试: measure时期的 吞吐率  --------------------------------------------
    always_comb begin
       f_throughput_o_all      = 0;
@@ -569,17 +569,17 @@ module tb_network_debug3
                if(o_data_N[i].ant == 0) begin
                   f_total_latency_all = f_total_latency_all + (f_time - o_data_N[i].timestamp);
                   f_latency_o_packet_count_all = f_latency_o_packet_count_all + 1;
-
+					
                   f_total_latency_normal = f_total_latency_normal + (f_time - o_data_N[i].timestamp);
                   f_latency_o_packet_count_normal = f_latency_o_packet_count_normal + 1;
                end else begin
                   if(o_data_N[i].b_num_memories == 0) begin
                      f_total_latency_all = f_total_latency_all + (f_time - o_data_N[i].timestamp);
                      f_latency_o_packet_count_all = f_latency_o_packet_count_all + 1;
-
+					
                      f_total_latency_ant = f_total_latency_ant + (f_time - o_data_N[i].timestamp);
                      f_latency_o_packet_count_ant = f_latency_o_packet_count_ant + 1;
-
+					   
                      f_total_latency_forward = f_total_latency_forward + (f_time - o_data_N[i].timestamp);
                      f_latency_o_packet_count_forward = f_latency_o_packet_count_forward + 1;
 
@@ -592,10 +592,10 @@ module tb_network_debug3
                      end else begin
                         f_total_latency_all = f_total_latency_all + (f_time - o_data_N[i].timestamp);
                         f_latency_o_packet_count_all = f_latency_o_packet_count_all + 1;
-
+					
                         f_total_latency_ant = f_total_latency_ant + (f_time - o_data_N[i].timestamp);
                         f_latency_o_packet_count_ant = f_latency_o_packet_count_ant + 1;
-
+					   
                         f_total_latency_backward = f_total_latency_backward + (f_time - o_data_N[i].timestamp);
                         f_latency_o_packet_count_backward = f_latency_o_packet_count_backward + 1;
                      end
@@ -630,7 +630,7 @@ module tb_network_debug3
          end
       end
    end
-
+   
    // 测试: 单包最长时延
    // ------------------------------------------------------------------------------------------------------------------
    always_ff@(negedge clk) begin
@@ -647,14 +647,14 @@ module tb_network_debug3
                if(current_packet_latency > f_max_latency_all)begin
                   f_max_latency_all <= current_packet_latency;
                end
-
+					
                if(o_data_N[i].ant == 0 && current_packet_latency > f_max_latency_normal)begin
                   f_max_latency_normal <= current_packet_latency;
                end else begin
                   if(current_packet_latency > f_max_latency_ant)begin
                      f_max_latency_ant <= current_packet_latency;
                   end
-
+					   
                   if(o_data_N[i].b_num_memories == 0) begin
                      if(current_packet_latency > f_max_latency_forward) begin // o_data_N[i].backward == 0
                         f_max_latency_forward <= f_time - o_data_N[i].timestamp;
@@ -676,33 +676,33 @@ module tb_network_debug3
          end
       end
    end
-
+  
    // ==================================================== Simulation =============================================================
-
+    
 	// Simulation:  System clock ----------------------------------
    initial begin
       clk = 1;
       forever #(CLK_PERIOD/2) clk = ~clk;
    end
-
+	
    // Simulation:  System time -----------------------------------
    initial begin
       f_time = 0;
       forever #(CLK_PERIOD) f_time = f_time + 1;
    end
-
+	
    // Simulation:  System reset -----------------------------------
    initial begin
       reset_n = 0;
       #(CLK_PERIOD + 3 * CLK_PERIOD / 4)
       reset_n = 1;
    end
-
+	
    // Simulation:  Run period -------------------------------------
    initial begin
       #(CLK_PERIOD * RUNNING_TIME) $finish;
    end
-
+	
    // Simulation:  Display -----------------------------------------------------
    initial begin
       $display(""); // $display，$write，$strobe，$monitot("",);
@@ -762,7 +762,7 @@ module tb_network_debug3
                         // 2.Memory: [,,,],
                         $write(" Memory: [%g", o_data_N[i].b_y_memory[0] * `X_NODES + o_data_N[i].b_x_memory[0]);
                         for(int m=1; m<o_data_N[i].b_num_memories; m++) begin
-                           $write(",%g", o_data_N[i].b_y_memory[m] * `X_NODES + o_data_N[i].b_x_memory[m]);
+                           $write(",%g", o_data_N[i].b_y_memory[m] * `X_NODES + o_data_N[i].b_x_memory[m]);   
                         end
                         $write("],  ");
                         // 3.Timestamp: <>,   Latency: <>
@@ -801,7 +801,7 @@ module tb_network_debug3
             $display("      # Average packet latency: %g cycles", f_average_latency_ant);
             $display("      # Max packet latency: %g cycles", f_max_latency_ant);
             $display("");
-
+				
             $display(" -- Ant.forward:");
             $display("      # Packets transmitted: %g, # Packets received: %g",
                                         f_measure_total_i_packet_count_forward,  f_measure_total_o_packet_count_forward);
@@ -819,7 +819,7 @@ module tb_network_debug3
          end
       end
    end//initial
-
+	
 endmodule
 /*FYI.
 1. add comments

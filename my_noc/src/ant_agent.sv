@@ -8,7 +8,7 @@ module ant_agent
 )
 (
    input logic reset_n,
-   input logic [0:`M-1] i_en,
+   input logic [0:`M-1][3:0] i_en,
    input packet_t [0:`N-1] i_data, // 数据输入端口
    input logic [0:`N-1] i_data_val, // 指出是否有数据输入
    
@@ -69,6 +69,7 @@ module ant_agent
    selection_aco #(.X_LOC(X_LOC), .Y_LOC(Y_LOC))
       selection_aco(
                     .reset_n(reset_n),
+                    .i_en(i_en),
                     
                     .i_x_dest(l_x_temp),
                     .i_y_dest(l_y_temp),

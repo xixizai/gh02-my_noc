@@ -69,6 +69,11 @@ set_global_assignment -name EDA_TEST_BENCH_NAME tb_network_debug -section_id eda
 set_global_assignment -name EDA_DESIGN_INSTANCE_NAME NA -section_id tb_network_debug
 set_global_assignment -name EDA_TEST_BENCH_RUN_SIM_FOR "10 us" -section_id tb_network_debug
 set_global_assignment -name EDA_TEST_BENCH_MODULE_NAME tb_network_debug -section_id tb_network_debug
+set_global_assignment -name EDA_TEST_BENCH_NAME tb_network_xy -section_id eda_simulation
+set_global_assignment -name EDA_DESIGN_INSTANCE_NAME NA -section_id tb_network_xy
+set_global_assignment -name EDA_TEST_BENCH_RUN_SIM_FOR "100 us" -section_id tb_network_xy
+set_global_assignment -name EDA_TEST_BENCH_MODULE_NAME tb_network_xy -section_id tb_network_xy
+set_global_assignment -name SYSTEMVERILOG_FILE src/selection_random.sv
 set_global_assignment -name SYSTEMVERILOG_FILE src/tb_network_xy.sv
 set_global_assignment -name SYSTEMVERILOG_FILE src/tb_network_debug.sv
 set_global_assignment -name SYSTEMVERILOG_FILE src/tb_network.sv
@@ -85,10 +90,6 @@ set_global_assignment -name SYSTEMVERILOG_FILE src/router.sv
 set_global_assignment -name SYSTEMVERILOG_FILE src/network.sv
 set_global_assignment -name SYSTEMVERILOG_FILE src/alinx_top.sv
 set_global_assignment -name SYSTEMVERILOG_FILE src/config.sv
-set_global_assignment -name EDA_TEST_BENCH_NAME tb_network_xy -section_id eda_simulation
-set_global_assignment -name EDA_DESIGN_INSTANCE_NAME NA -section_id tb_network_xy
-set_global_assignment -name EDA_TEST_BENCH_RUN_SIM_FOR "100 us" -section_id tb_network_xy
-set_global_assignment -name EDA_TEST_BENCH_MODULE_NAME tb_network_xy -section_id tb_network_xy
 set_global_assignment -name EDA_TEST_BENCH_FILE src/config.sv -section_id tb_router_debug -hdl_version SystemVerilog_2005
 set_global_assignment -name EDA_TEST_BENCH_FILE src/router.sv -section_id tb_router_debug -hdl_version SystemVerilog_2005
 set_global_assignment -name EDA_TEST_BENCH_FILE src/fifo_packet.sv -section_id tb_router_debug -hdl_version SystemVerilog_2005
@@ -128,7 +129,7 @@ set_global_assignment -name EDA_TEST_BENCH_FILE src/network.sv -section_id tb_ne
 set_global_assignment -name EDA_TEST_BENCH_FILE src/ppe_roundrobin.sv -section_id tb_network_xy -hdl_version SystemVerilog_2005
 set_global_assignment -name EDA_TEST_BENCH_FILE src/router.sv -section_id tb_network_xy -hdl_version SystemVerilog_2005
 set_global_assignment -name EDA_TEST_BENCH_FILE src/routing_xy.sv -section_id tb_network_xy -hdl_version SystemVerilog_2005
-set_global_assignment -name EDA_TEST_BENCH_FILE src/selection_aco.sv -section_id tb_network_xy -hdl_version SystemVerilog_2005
+set_global_assignment -name EDA_TEST_BENCH_FILE src/selection_random.sv -section_id tb_network_xy -hdl_version SystemVerilog_2005
 set_global_assignment -name EDA_TEST_BENCH_FILE src/switch_control.sv -section_id tb_network_xy -hdl_version SystemVerilog_2005
 set_global_assignment -name EDA_TEST_BENCH_FILE src/switch_onehot_packet.sv -section_id tb_network_xy -hdl_version SystemVerilog_2005
 set_global_assignment -name EDA_TEST_BENCH_FILE src/tb_network_xy.sv -section_id tb_network_xy -hdl_version SystemVerilog_2005

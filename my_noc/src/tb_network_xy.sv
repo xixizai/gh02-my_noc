@@ -9,12 +9,15 @@ module tb_network_xy
 #(
    parameter CLK_PERIOD = 100ps, // 设置一个时钟周期为 100ps
    parameter integer PACKET_RATE = 10, // 平均包注入率 Offered traffic as percent of capacity
+   parameter integer HOTSPOT_PACKET_RATE = 50, // hotspot包注入率
    
    parameter integer WARMUP_PACKETS = `warmup_packets_num, // 使用WARMUP_PACKETS数量的包来 warm-up the network
    parameter integer MEASURE_PACKETS = `warmup_packets_num*5, // 用来测试的包的数量
    parameter integer DRAIN_PACKETS = `warmup_packets_num*3, // 使用DRAIN_PACKETS数量的包来 drain the network
    
-   parameter integer NODE_QUEUE_DEPTH = `INPUT_QUEUE_DEPTH * 8 // 模拟PE结点中 fifo 的深度
+   parameter integer NODE_QUEUE_DEPTH = `INPUT_QUEUE_DEPTH * 8, // 模拟PE结点中 fifo 的深度
+   parameter integer routing_type = 1,
+	parameter integer traffic_type = 1
 );
 
    // ===================================================  ==============================================================
@@ -25,28 +28,6 @@ module tb_network_xy
    longint  f_time;   // 计算时钟周期数（时间）
    longint  f_time_begin;  // 记录开始时间（最初的复位时间）
    logic    [7:0] packet_count;  // 对仿真生成的包进行计数，可用来标记每个包的id
-	
-   // 链接network模块端口的变量定义 -------------------------------------------------
-   //packet_t [0:`NODES-1] l_data_FFtoN;     // 输入，包，fifo -> network 中的对应路由
-   //logic    [0:`NODES-1] l_data_val_FFtoN; // 输入，包信号，fifo -> network 中的对应路由
-   //logic    [0:`NODES-1] l_en_NtoFF;       // 输出，对应路由的使能信号，network -> fifo
-   
-   packet_t [0:`NODES-1] o_data_N;     // 输出，包，network -> testbench 仿真PE结点
-   logic    [0:`NODES-1] o_data_val_N; // 输出，包信号，network -> testbench 仿真PE结点
-   
-   // 链接fifo模块（属于仿真的PE结点）端口的变量定义 ---------------------------------
-   packet_t [0:`NODES-1] i_data_FF;     // 输入，仿真包，testbench 仿真PE结点-> fifo
-   logic    [0:`NODES-1] i_data_val_FF; // 输入，仿真包信号，testbench 仿真PE结点-> fifo
-   logic    [0:`NODES-1] l_en_NtoFF;    // 输入，对应路由的使能信号，network -> fifo
-   
-   packet_t [0:`NODES-1] l_data_FFtoN;    // 输出，包，fifo -> network 中的对应路由
-   logic    [0:`NODES-1] l_data_val_FFtoN;// 输出，包信号，fifo -> network 中的对应路由
-   logic    [0:`NODES-1] o_en_FF;         // 输出，fifo模块的使能信号，fifo->testbench 仿真PE结点
-   
-   // 值为随机生成的变量 --------------------------------------
-   logic [0:`NODES-1] rand_data_val; // 根据包注入率随机生成0或1，如果等于1则赋予数据包有效
-   logic [0:`NODES-1][$clog2(`X_NODES)-1:0] rand_x_dest; // 随机生成数据包的x坐标
-   logic [0:`NODES-1][$clog2(`Y_NODES)-1:0] rand_y_dest; // 随机生成数据包的y坐标
 	
    // =================================================== 测试变量 ==============================================================
 
@@ -122,43 +103,70 @@ module tb_network_xy
       integer f_max_latency_ant;     // 最长时延，ant包
       integer f_max_latency_forward; // 最长时延，forward ant包
       integer f_max_latency_backward;// 最长时延，backward ant包
-   longint current_packet_latency;// 当前包时延
+   longint current_packet_latency; // 当前包时延
    //integer f_latency_frequency [0:99]; // The amount of times a single latency occurs
 	
-   // ================================================ 从子模块里引出的变量 ===========================================================
+   // ================================================ 值为随机生成的变量 ==========================================================
+	
+   logic [0:`NODES-1] rand_data_val; // 根据包注入率随机生成0或1，如果等于1则赋予数据包有效
+   logic [0:`NODES-1][$clog2(`X_NODES)-1:0] rand_x_dest; // 随机生成数据包的x坐标
+   logic [0:`NODES-1][$clog2(`Y_NODES)-1:0] rand_y_dest; // 随机生成数据包的y坐标
+   logic [$clog2(`NODES)-1:0] rand_hotspots_num;
+	logic [0:`NODES-1][$clog2(`X_NODES)-1:0] rand_hotspots;
+	
+   // ================================================ 从子模块里引出的test变量 ===========================================================
 	
    logic    [0:`NODES-1][0:`N-1] test_en_SCtoFF;
-   // FFtoAA ---------------------------------------------------------------------
-   packet_t [0:`NODES-1][0:`N-1] test_data_FFtoAA;
+   // data_val -----------------------------------------------------------------------
    logic    [0:`NODES-1][0:`N-1] test_data_val_FFtoAA;
-   // AAtoSW ---------------------------------------------------------------------
+   // data ----------------------------------------------------------------------
+   packet_t [0:`NODES-1][0:`N-1] test_data_FFtoAA;
    packet_t [0:`NODES-1][0:`N-1] test_data_AAtoSW;
-   // AAtoRC ---------------------------------------------------------------------
-   logic    [0:`NODES-1][0:`N-1][0:`M-1] test_output_req_AAtoSC;
-   // SC.sv ----------------------------------------------------------------------
-   logic    [0:`NODES-1][0:`N-1][0:`M-1] test_l_req_matrix_SC;
-   // AA.sv ----------------------------------------------------------------------
-   logic    [0:`NODES-1][0:`N-1][0:`M-1] test_l_output_req;
-   logic    [0:`NODES-1][0:`N-1]test_routing_calculate;
+   // routing_odd_even ----------------------------------------------------------
+   logic    [0:`NODES-1][0:`N-1] test_routing_calculate;
+   logic    [0:`NODES-1][0:`N-1][0:`M-1][1:0] test_avail_directions;
+   // selection_aco -------------------------------------------------------------
    logic    [0:`NODES-1][0:`N-1] test_update;
    logic    [0:`NODES-1][0:`N-1] test_select_neighbor;
-   logic    [0:`NODES-1][0:`N-1][0:`M-1] test_tb_o_output_req;
-   // ant_routing_table.sv --------------------------------------------------------
    logic    [0:`NODES-1][0:`NODES-1][0:`N-2][`PH_TABLE_DEPTH-1:0] test_pheromones;
    logic    [0:`NODES-1][0:`PH_TABLE_DEPTH-1] test_max_pheromone_value;
    logic    [0:`NODES-1][0:`PH_TABLE_DEPTH-1] test_min_pheromone_value;
-   logic    [0:`NODES-1][0:`N-1][0:`M-1][1:0] test_avail_directions;
+   logic    [0:`NODES-1][0:`N-1][0:`M-1] test_tb_o_output_req;
+   // AA.sv ----------------------------------------------------------------------
+   logic    [0:`NODES-1][0:`N-1][0:`M-1] test_l_output_req;
+   logic    [0:`NODES-1][0:`N-1][0:`M-1] test_output_req_AAtoSC;
+   // SC.sv ----------------------------------------------------------------------
+   logic    [0:`NODES-1][0:`N-1][0:`M-1] test_l_req_matrix_SC;
+   	
+	// ===============================================  链接network模块端口的变量定义  =========================================================
 	
-   // ================================================== 生成 network 模块 ===========================================================
+   // packet_t [0:`NODES-1] l_data_FFtoN;     // 输入，包，   fifo -> network 中的对应路由
+   // logic    [0:`NODES-1] l_data_val_FFtoN; // 输入，包信号，fifo -> network 中的对应路由
+   
+   packet_t [0:`NODES-1] o_data_N;     // 输出，包，   network -> testbench 仿真PE结点
+   logic    [0:`NODES-1] o_data_val_N; // 输出，包信号，network -> testbench 仿真PE结点
+   logic    [0:`NODES-1][3:0] o_en_N;  // 输出，对应路由的使能信号，network -> fifo
+   
+   // ==========================================  链接fifo模块（属于仿真的PE结点）端口的变量定义  ===============================================
+	
+   packet_t [0:`NODES-1] i_data_FF;     // 输入，仿真包，   testbench 仿真PE结点-> fifo
+   logic    [0:`NODES-1] i_data_val_FF; // 输入，仿真包信号，testbench 仿真PE结点-> fifo
+   logic    [0:`NODES-1] i_en_FF;       // 输入，对应路由的使能信号，network -> fifo
+   
+   packet_t [0:`NODES-1] l_data_FFtoN;    // 输出，包，             fifo -> network 中的对应路由
+   logic    [0:`NODES-1] l_data_val_FFtoN;// 输出，包信号，          fifo -> network 中的对应路由
+   logic    [0:`NODES-1][3:0] o_en_FF;    // 输出，fifo模块的使能信号，fifo -> testbench 仿真PE结点
+   
+   // ====================================================  生成 network 模块  ============================================================
   
    network network(
 						.clk(clk), 
 						.reset_n(reset_n), 
 
-                                                // 带fifo模块
+                  // 带fifo模块
 						.i_data(l_data_FFtoN), 
 						.i_data_val(l_data_val_FFtoN),
-						.o_en(l_en_NtoFF),
+						.o_en(o_en_N),
 						.o_data(o_data_N),
 						.o_data_val(o_data_val_N),
 
@@ -194,7 +202,7 @@ module tb_network_xy
                   .test_avail_directions(test_avail_directions)
    );
    
-   // ============================================= 生成 各PE结点的 FIFO 模块 ===========================================================
+   // =============================================  生成 各PE结点的 FIFO 模块  ===========================================================
    genvar i;
    generate
       for (i=0; i<`NODES; i++) begin : GENERATE_INPUT_QUEUES
@@ -205,15 +213,22 @@ module tb_network_xy
                              .reset_n(reset_n),
                              .i_data(i_data_FF[i]),      
                              .i_data_val(i_data_val_FF[i]),    //f_data_val[i]
-                             .i_en(l_en_NtoFF[i]),
+                             .i_en(i_en_FF[i]),
                              .o_data(l_data_FFtoN[i]),         //l_data_FFtoN
                              .o_data_val(l_data_val_FFtoN[i]), //f_o_data_val
                              .o_en(o_en_FF[i])
 									 );
       end
    endgenerate
-  
-   // =================================================== 仿真数据生成 ==============================================================
+   
+	always_comb begin
+	   for(int i=0; i<`NODES; i++)begin
+		   i_en_FF[i] = ( |o_en_N[i]);
+		end
+	end
+
+
+   // =============================================== uniform traffic 仿真数据生成 =========================================================
    
    // 中间变量的生成（随机地） ------------------------------------------------------
 	
@@ -238,10 +253,26 @@ module tb_network_xy
             rand_data_val[i] <= 0;
          end
       end else begin
-         for(int i=0; i<`NODES; i++) begin
-            rand_data_val[i] <= ($urandom_range(100,1) <= PACKET_RATE) ? 1'b1 : 1'b0;
-         end
-      end
+         if(traffic_type==0)begin // uniform
+            for(int i=0; i<`NODES; i++) begin
+               rand_data_val[i] <= ($urandom_range(100,1) <= PACKET_RATE) ? 1'b1 : 1'b0;
+            end
+		   end else if(traffic_type==1)begin// transpose 还没改
+				for(int i=0; i<`NODES; i++) begin
+					rand_data_val[i] <= ($urandom_range(100,1) <= PACKET_RATE) ? 1'b1 : 1'b0;
+				end
+			end else begin // hotspot
+			// 随机hotspot生成 在下面initial部分
+				for(int i=0; i<`NODES; i++) begin
+					if(i==rand_hotspots[0] || i==rand_hotspots[1] || i==rand_hotspots[2] || rand_hotspots[3])begin
+						// n个热点必须一一写出。。没想出其它办法。。
+						rand_data_val[i] <= ($urandom_range(100,1) <= HOTSPOT_PACKET_RATE) ? 1'b1 : 1'b0;
+					end else begin
+						rand_data_val[i] <= ($urandom_range(100,1) <= PACKET_RATE) ? 1'b1 : 1'b0;
+					end
+				end
+			end
+		end
    end
   
    // input data of network generation -----------------------------------------------------------------
@@ -286,13 +317,13 @@ module tb_network_xy
                i_data_FF[i].timestamp <= f_time;
                i_data_FF[i].id <= packet_count*`NODES+i;
 					
-               //if(f_time % `CREATE_ANT_PERIOD == 0)begin
-                  //i_data_val_FF[i] <= o_en_FF[i];
-                  //i_data_FF[i].ant <= 1;
-               //end else begin
-                  i_data_val_FF[i] <= rand_data_val[i] && o_en_FF[i];
+               if(f_time % `CREATE_ANT_PERIOD == 0)begin
+                  i_data_val_FF[i] <= ( |o_en_FF[i]);
+                  i_data_FF[i].ant <= 1;
+               end else begin
+                  i_data_val_FF[i] <= rand_data_val[i] && ( |o_en_FF[i]);
                   i_data_FF[i].ant <= 0;
-               //end
+               end
                
                if(f_total_i_data_count_all >= WARMUP_PACKETS && f_total_i_data_count_all < (WARMUP_PACKETS+MEASURE_PACKETS)) begin
                   i_data_FF[i].measure <= 1;
@@ -307,7 +338,8 @@ module tb_network_xy
          end
       end
    end
-   // ====================================================== Calculation =========================================================
+
+   // ======================================================  测试  ==============================================================
    //parameter integer WARMUP_PACKETS = 1000, // Number of packets to warm-up the network
    //parameter integer MEASURE_PACKETS = 5000, // Number of packets to be measured
    //parameter integer DRAIN_PACKETS = 3000, // Number of packets to drain the network
@@ -640,7 +672,21 @@ module tb_network_xy
    end
    
    // ====================================================== Simulation =========================================================
-    
+   // Simulation:  System Clock ----------------------------------
+   initial begin
+	   rand_hotspots_num = $urandom_range(`NODES-1, 1)+2;
+		//rand_hotspots[0] = 0;
+		//rand_hotspots[rand_hotspots_num-1]=`NODES;
+	   for (int i=0; i<rand_hotspots_num; i++)begin
+	      rand_hotspots[i] = $urandom_range(`NODES-1, 0);
+		   for(int j=0; j<i; j++)begin
+			   if(rand_hotspots[j] == rand_hotspots[i])begin
+   	         rand_hotspots[i] = $urandom_range(`NODES-1, 0);
+				end
+			end
+	   end
+	end
+	
    // Simulation:  System Clock ----------------------------------
    initial begin
       clk = 1;
@@ -753,5 +799,4 @@ endmodule
 forward packet 到了也得打出来以下信息：
 
 [<current_cycle>] packet_id: <>, memory: [,,,], timestamp: <>, latency: <>*/
-
 

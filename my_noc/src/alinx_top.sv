@@ -10,10 +10,10 @@ module alinx_top(
 
    packet_t [0:`NODES-1] i_data; // PE结点 -> network
    logic [0:`NODES-1] i_data_val; // PE结点 -> network
-   logic [0:`NODES-1] o_en; // network -> PE结点
+   logic [0:`NODES-1][3:0] o_en; // network -> PE结点
 
    packet_t [0:`NODES-1] o_data; // network -> PE结点
-   logic [0:`NODES-1] o_data_val; // network -> PE结点
+   logic [0:`NODES-1][3:0] o_data_val; // network -> PE结点
    
    
    // ===================================================== 从子模块引出的变量 =====================================================
@@ -30,7 +30,7 @@ module alinx_top(
    logic    [0:`NODES-1][0:`N-1][0:`M-1] test_l_req_matrix_SC;
    // AA.sv ----------------------------------------------------------------------
    logic    [0:`NODES-1][0:`N-1][0:`M-1] test_l_output_req;
-   logic    [0:`NODES-1][0:`N-1]test_routing_calculate;
+   logic    [0:`NODES-1][0:`N-1] test_routing_calculate;
    logic    [0:`NODES-1][0:`N-1] test_update;
    logic    [0:`NODES-1][0:`N-1] test_select_neighbor;
    logic    [0:`NODES-1][0:`N-1][0:`M-1] test_tb_o_output_req;

@@ -18,10 +18,10 @@ module network
    
    input packet_t [0:`NODES-1] i_data,  // 输入，PE结点 -> network
    input logic [0:`NODES-1] i_data_val, // 输入，指出输入端口（i_data）是否有数据输入
-   output logic [0:`NODES-1] o_en,      // 输出，输入端口（i_data）的使能信号
    
    output packet_t [0:`NODES-1] o_data,  // 输出，network -> PE结点
    output logic [0:`NODES-1] o_data_val, // 输出，指出输出端口（o_data）是否有数据输出
+   output logic [0:`NODES-1][3:0] o_en,      // 输出，输入端口（i_data）的使能信号
    
    output logic [0:`NODES-1][0:`N-1] test_en_SCtoFF,
    
@@ -49,12 +49,12 @@ module network
    // Network connections from which routers will read
    packet_t [0:`NODES-1][0:`N-1] l_datain;
    logic [0:`NODES-1][0:`N-1] l_datain_val;
-   logic [0:`NODES-1][0:`N-1] l_o_en;
+   logic [0:`NODES-1][0:`N-1][3:0] l_o_en;
    
    // Network connections to which routers will write
    packet_t [0:`NODES-1][0:`M-1] l_dataout;
    logic [0:`NODES-1][0:`M-1] l_dataout_val;
-   logic [0:`NODES-1][0:`M-1] l_i_en;
+   logic [0:`NODES-1][0:`M-1][3:0] l_i_en;
 
    always_comb begin
       for(int i=0; i<`NODES; i++) begin
@@ -73,7 +73,7 @@ module network
          l_datain_val[i][4] = i % `X_NODES == 0 ? '0 : l_dataout_val[i-1][2];                // 西路由 -> router[i][4]
          
          // 传递，从 当地PE结点 和 下游router 的输入使能信号 -> router[i]
-         l_i_en[i][0] = '1;                                                     // 当地PE结点 -> router[i][0]
+         l_i_en[i][0] = 4'b1;                                                     // 当地PE结点 -> router[i][0]
          l_i_en[i][1] = i < `X_NODES*(`Y_NODES-1) ? l_o_en[i+`X_NODES][3] : '0; // 北路由 -> router[i][1]
          l_i_en[i][2] = (i + 1) % `X_NODES == 0 ? '0 : l_o_en[i+1][4];          // 东路由 -> router[i][2]
          l_i_en[i][3] = i > (`X_NODES-1) ? l_o_en[i-`X_NODES][1] : '0;          // 南路由 -> router[i][3]
