@@ -5,7 +5,7 @@
 // 针对router模块的testbench, 只查看 RX、TX 是否正常
 module tb_router_debug
 #(
-  parameter integer X = 2,
+  parameter integer X = 1,
   parameter integer Y = 1,
   parameter CLK_PERIOD = 100ps,
   parameter integer PACKET_RATE = 5 // 平均包注入率
@@ -70,8 +70,10 @@ module tb_router_debug
    logic    [0:`N-1] test_update;
    logic    [0:`N-1] test_select_neighbor;
    logic    [0:`NODES-1][0:`N-2][`PH_TABLE_DEPTH-1:0] test_pheromones;
-   logic    [0:`PH_TABLE_DEPTH-1] test_max_pheromone_value;
-   logic    [0:`PH_TABLE_DEPTH-1] test_min_pheromone_value;
+   logic    [0:`N-1][0:`PH_TABLE_DEPTH-1] test_max_pheromone_value;
+   logic    [0:`N-1][0:`PH_TABLE_DEPTH-1] test_min_pheromone_value;
+   logic [0:`N-1][$clog2(`N)-1:0] test_max_pheromone_column;
+   logic [0:`N-1][$clog2(`N)-1:0] test_min_pheromone_column;
    logic    [0:`N-1][0:`M-1] test_tb_o_output_req;
    // AA.sv ----------------------------------------------------------------------
    logic    [0:`N-1][0:`M-1] test_l_output_req;
@@ -112,6 +114,8 @@ module tb_router_debug
                   .test_pheromones(test_pheromones),
                   .test_max_pheromone_value(test_max_pheromone_value),
                   .test_min_pheromone_value(test_min_pheromone_value),
+  .test_max_pheromone_column(test_max_pheromone_column),
+  .test_min_pheromone_column(test_min_pheromone_column),
                   .test_avail_directions(test_avail_directions)
                  );
    // SIMULATION:  System Clock

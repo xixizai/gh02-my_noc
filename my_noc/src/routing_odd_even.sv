@@ -5,7 +5,7 @@ module routing_odd_even#(
   parameter integer X_LOC, // 当前结点的X坐标
   parameter integer Y_LOC, // 当前结点的Y坐标
   
-  parameter integer routing_type = 2
+  parameter integer routing_type = 2 //0:nothing   1:xy   2:odd even
 )(
   input logic [0:`N-1] i_routing_calculate,             // 输入，路由计算使能信号
   input logic [0:`N-1][$clog2(`X_NODES)-1:0] i_x_source,// 输入，数据包源的信息（x坐标）
@@ -26,26 +26,23 @@ module routing_odd_even#(
 
    always_comb begin
       o_select_neighbor = 5'b0;
-      o_avail_directions = 5'b0;
-	   if(routing_type == 0)begin
-		// XY路由
+      o_avail_directions = '0;
+	   if(routing_type == 1)begin
+			// XY路由
 			for(int i=0;i<`N;i++)begin
 				if(i_routing_calculate[i]) begin
 					if(i_x_dest[i] != X_LOC) begin
 						o_avail_directions[i][o_avail_directions[i][`M-1]] = (i_x_dest[i] > X_LOC) ? 2-1 : 4-1;//directions.push_back(DIRECTION_NORTH);
 						o_avail_directions[i][`M-1] = o_avail_directions[i][`M-1] + 1;
-						//o_output_req = (i_x_dest > X_LOC) ? 5'b00100 : 5'b00001;
-					end else begin//if (i_y_dest[i] != Y_LOC)
+					end else if (i_y_dest[i] != Y_LOC)begin
 						o_avail_directions[i][o_avail_directions[i][`M-1]] = (i_y_dest[i] > Y_LOC) ? 1-1 : 3-1;//directions.push_back(DIRECTION_NORTH);
 						o_avail_directions[i][`M-1] = o_avail_directions[i][`M-1] + 1;
-						//o_output_req = (i_y_dest > Y_LOC) ? 5'b01000 : 5'b00010;
-					end //else
-					//   o_output_req = 5'b10000;
-				end
-				o_select_neighbor[i] = 1;
-			end
+					end //else o_output_req = 5'b10000;
+					o_select_neighbor[i] = 1;
+				end // if(i_routing_calculate[i])
+			end // for
 		end else begin
-		// odd even路由
+			// odd even路由
 			for(int i=0;i<`N;i++)begin
 				//e0[i] = i_x_dest[i] - X_LOC;
 				//e1[i] = i_y_dest[i] - Y_LOC;

@@ -8,8 +8,8 @@
 
 `define TIME_STAMP_SIZE 32 // 时间戳变量的位宽
 `define PH_TABLE_DEPTH 4 // 信息素表中值的位宽
-`define PH_MIN_VALUE `PH_TABLE_DEPTH'b0 // 信息素表中值的最小值
-`define PH_MAX_VALUE `PH_TABLE_DEPTH'b1111 // 信息素表中的最大值
+`define PH_MIN_VALUE 0 // 信息素表中值的最小值
+`define PH_MAX_VALUE 4'b1111 // 信息素表中的最大值
 
 `define CREATE_ANT_PERIOD 100 // 创建 ant packet 的周期
 `define warmup_packets_num 1000 // 仿真中warmup阶段要发送的数据包数目

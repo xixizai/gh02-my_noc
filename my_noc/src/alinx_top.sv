@@ -36,8 +36,10 @@ module alinx_top(
    logic    [0:`NODES-1][0:`N-1][0:`M-1] test_tb_o_output_req;
    // ant_routing_table.sv --------------------------------------------------------
    logic    [0:`NODES-1][0:`NODES-1][0:`N-2][`PH_TABLE_DEPTH-1:0] test_pheromones;
-   logic    [0:`NODES-1][0:`PH_TABLE_DEPTH-1] test_max_pheromone_value;
-   logic    [0:`NODES-1][0:`PH_TABLE_DEPTH-1] test_min_pheromone_value;
+   logic    [0:`NODES-1][0:`N-1][0:`PH_TABLE_DEPTH-1] test_max_pheromone_value;
+   logic    [0:`NODES-1][0:`N-1][0:`PH_TABLE_DEPTH-1] test_min_pheromone_value;
+   logic [0:`NODES-1][0:`N-1][$clog2(`N)-1:0] test_max_pheromone_column;
+   logic [0:`NODES-1][0:`N-1][$clog2(`N)-1:0] test_min_pheromone_column;
    logic    [0:`NODES-1][0:`N-1][0:`M-1][1:0] test_avail_directions;
 	
    // ============================================================ network ====================================================
@@ -70,6 +72,8 @@ module alinx_top(
                    .test_pheromones(test_pheromones),
                    .test_max_pheromone_value(test_max_pheromone_value),
                    .test_min_pheromone_value(test_min_pheromone_value),
+  .test_max_pheromone_column(test_max_pheromone_column),
+  .test_min_pheromone_column(test_min_pheromone_column),
                    .test_avail_directions(test_avail_directions)
                   );
 			

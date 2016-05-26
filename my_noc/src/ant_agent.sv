@@ -23,8 +23,10 @@ module ant_agent
    output logic [0:`N-1][0:`M-1] test_tb_o_output_req,
    
    output logic [0:`NODES-1][0:`N-2][`PH_TABLE_DEPTH-1:0] test_pheromones,
-   output logic [`PH_TABLE_DEPTH-1:0] test_max_pheromone_value,
-   output logic [`PH_TABLE_DEPTH-1:0] test_min_pheromone_value,
+   output logic [0:`N-1][`PH_TABLE_DEPTH-1:0] test_max_pheromone_value,
+   output logic [0:`N-1][`PH_TABLE_DEPTH-1:0] test_min_pheromone_value,
+  output logic [0:`N-1][$clog2(`N)-1:0] test_max_pheromone_column,
+  output logic [0:`N-1][$clog2(`N)-1:0] test_min_pheromone_column,
    output logic [0:`N-1][0:`M-1][1:0] test_avail_directions
 );
 
@@ -82,7 +84,9 @@ module ant_agent
                     
                     .test_pheromones(test_pheromones),
                     .test_max_pheromone_value(test_max_pheromone_value),
-                    .test_min_pheromone_value(test_min_pheromone_value)
+                    .test_min_pheromone_value(test_min_pheromone_value),
+  .test_max_pheromone_column(test_max_pheromone_column),
+  .test_min_pheromone_column(test_min_pheromone_column)
                    );
    // ============================================================================================================================
    always_comb begin

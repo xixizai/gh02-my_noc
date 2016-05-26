@@ -5,26 +5,29 @@
 module tb_network
 #(
    parameter CLK_PERIOD = 100ps, // 设置一个时钟周期为 100ps
-   parameter integer PACKET_RATE = 5, // 平均包注入率 Offered traffic as percent of capacity
-   parameter integer HOTSPOT_PACKET_RATE = 20, // hotspot包注入率
-   
    parameter integer WARMUP_PACKETS = `warmup_packets_num, // 使用WARMUP_PACKETS数量的包来 warm-up the network
    parameter integer MEASURE_PACKETS = `warmup_packets_num*5, // 用来测试的包的数量
    parameter integer DRAIN_PACKETS = `warmup_packets_num*3, // 使用DRAIN_PACKETS数量的包来 drain the network
+	parameter longint FINISH_TIME = CLK_PERIOD * `warmup_packets_num*20,
    
-   parameter integer NODE_QUEUE_DEPTH = `INPUT_QUEUE_DEPTH * 8, // 模拟PE结点中 fifo 的深度
-   parameter integer routing_type = 2,
-	parameter integer traffic_type = 2
+   parameter integer PACKET_RATE = 5, // 平均包注入率 Offered traffic as percent of capacity
+   parameter integer HOTSPOT_PACKET_RATE = 30, // hotspot包注入率
+   
+   parameter integer NODE_QUEUE_DEPTH = `INPUT_QUEUE_DEPTH * 5, // 模拟PE结点中 fifo 的深度
+	parameter integer traffic_type = 2, //0:nothing   1:uniform   2:transpose   3:hotspot
+   parameter integer routing_type = 2, //0:nothing   1:xy   2:odd even
+   parameter integer selection_type = 3 //0:选择第一个   1:random   2:obl   3:aco
 );
 
-   // ===================================================  ==============================================================
+   // =================================================== 变量 ==============================================================
 	integer file_id;
-
+  
    logic clk;
    logic reset_n;
    
    longint  f_time;   // 计算时钟周期数（时间）
    longint  f_time_begin;  // 记录开始时间（最初的复位时间）
+   longint  f_time_finish;  // 记录开始时间（时间）
    logic    [7:0] packet_count;  // 对仿真生成的包进行计数，可用来标记每个包的id
 	
    // =================================================== 测试变量 ==============================================================
@@ -127,8 +130,10 @@ module tb_network
    logic    [0:`NODES-1][0:`N-1] test_update;
    logic    [0:`NODES-1][0:`N-1] test_select_neighbor;
    logic    [0:`NODES-1][0:`NODES-1][0:`N-2][`PH_TABLE_DEPTH-1:0] test_pheromones;
-   logic    [0:`NODES-1][0:`PH_TABLE_DEPTH-1] test_max_pheromone_value;
-   logic    [0:`NODES-1][0:`PH_TABLE_DEPTH-1] test_min_pheromone_value;
+   logic    [0:`NODES-1][0:`N-1][0:`PH_TABLE_DEPTH-1] test_max_pheromone_value;
+   logic    [0:`NODES-1][0:`N-1][0:`PH_TABLE_DEPTH-1] test_min_pheromone_value;
+   logic    [0:`NODES-1][0:`N-1][$clog2(`N)-1:0] test_max_pheromone_column;
+   logic    [0:`NODES-1][0:`N-1][$clog2(`N)-1:0] test_min_pheromone_column;
    logic    [0:`NODES-1][0:`N-1][0:`M-1] test_tb_o_output_req;
    // AA.sv ----------------------------------------------------------------------
    logic    [0:`NODES-1][0:`N-1][0:`M-1] test_l_output_req;
@@ -197,6 +202,8 @@ module tb_network
 						.test_pheromones(test_pheromones),
 						.test_max_pheromone_value(test_max_pheromone_value),
 						.test_min_pheromone_value(test_min_pheromone_value),
+  .test_max_pheromone_column(test_max_pheromone_column),
+  .test_min_pheromone_column(test_min_pheromone_column),
                   .test_avail_directions(test_avail_directions)
    );
    
@@ -238,10 +245,19 @@ module tb_network
             rand_y_dest[i] <= 0;
          end
       end else begin
-         for(int i=0; i<`NODES; i++) begin
-            rand_x_dest[i] <= $urandom_range(`X_NODES-1, 0);
-            rand_y_dest[i] <= $urandom_range(`Y_NODES-1, 0);
-         end
+		   if(traffic_type==2)begin// transpose 还没改
+				for (int y = 0; y < `Y_NODES; y++) begin
+					for (int x = 0; x < `X_NODES; x++) begin
+						rand_x_dest[y*`X_NODES+x] <= `X_NODES-1-x;
+						rand_y_dest[y*`X_NODES+x] <= `Y_NODES-1-y;
+					end
+				end
+			end else begin
+				for(int i=0; i<`NODES; i++) begin
+					rand_x_dest[i] <= $urandom_range(`X_NODES-1, 0);
+					rand_y_dest[i] <= $urandom_range(`Y_NODES-1, 0);
+				end
+			end
       end
    end
    // 随机包有效 -------------------
@@ -251,18 +267,18 @@ module tb_network
             rand_data_val[i] <= 0;
          end
       end else begin
-         if(traffic_type==0)begin // uniform
+         if(traffic_type==1)begin // uniform
             for(int i=0; i<`NODES; i++) begin
                rand_data_val[i] <= ($urandom_range(100,1) <= PACKET_RATE) ? 1'b1 : 1'b0;
             end
-		   end else if(traffic_type==1)begin// transpose 还没改
+		   end else if(traffic_type==2)begin// transpose 还没改
 				for(int i=0; i<`NODES; i++) begin
 					rand_data_val[i] <= ($urandom_range(100,1) <= PACKET_RATE) ? 1'b1 : 1'b0;
 				end
 			end else begin // hotspot
 			// 随机hotspot生成 在下面initial部分
 				for(int i=0; i<`NODES; i++) begin
-					if(i==rand_hotspots[0] || i==rand_hotspots[1] || i==rand_hotspots[2] || rand_hotspots[3])begin
+					if(i==rand_hotspots[0] || i==rand_hotspots[1] || i==rand_hotspots[2] || i==rand_hotspots[3])begin
 						// n个热点必须一一写出。。没想出其它办法。。
 						rand_data_val[i] <= ($urandom_range(100,1) <= HOTSPOT_PACKET_RATE) ? 1'b1 : 1'b0;
 					end else begin
@@ -277,6 +293,8 @@ module tb_network
    // fifo输入端口 数据的生成 -----------------
    always_ff@(posedge clk) begin
       if(~reset_n) begin
+		   f_time_begin <= f_time;
+			f_time_finish <= 0;
          packet_count <= 0;
          for (int y = 0; y < `Y_NODES; y++) begin
             for (int x = 0; x < `X_NODES; x++) begin
@@ -315,14 +333,21 @@ module tb_network
                i_data_FF[i].timestamp <= f_time;
                i_data_FF[i].id <= packet_count*`NODES+i;
 					
-               if(f_time % `CREATE_ANT_PERIOD == 0)begin
-                  i_data_val_FF[i] <= ( |o_en_FF[i]);
-                  i_data_FF[i].ant <= 1;
+					if(selection_type==3)begin
+					   // normal+ant packet
+						if(f_time % `CREATE_ANT_PERIOD == 0)begin
+							i_data_val_FF[i] <= ( |o_en_FF[i]);
+							i_data_FF[i].ant <= 1;
+						end else begin
+							i_data_val_FF[i] <= rand_data_val[i] && ( |o_en_FF[i]);
+							i_data_FF[i].ant <= 0;
+						end
                end else begin
-                  i_data_val_FF[i] <= rand_data_val[i] && ( |o_en_FF[i]);
-                  i_data_FF[i].ant <= 0;
-               end
-               
+						// only normal packet
+						i_data_val_FF[i] <= rand_data_val[i] && ( |o_en_FF[i]);
+						i_data_FF[i].ant <= 0;
+					end
+					
                if(f_total_i_data_count_all >= WARMUP_PACKETS && f_total_i_data_count_all < (WARMUP_PACKETS+MEASURE_PACKETS)) begin
                   i_data_FF[i].measure <= 1;
                end else begin
@@ -332,6 +357,7 @@ module tb_network
                //end
             end else begin
                i_data_val_FF[i] <= 0;
+					f_time_finish <= (f_time_finish==0)? f_time : f_time_finish;
             end
          end
       end
@@ -362,7 +388,7 @@ module tb_network
          end          
       end else begin
          for(int i=0; i<`NODES; i++) begin
-            if(l_data_val_FFtoN[i])begin
+            if(l_data_val_FFtoN[i] && i_en_FF[i])begin
             //TX
                f_port_i_data_count_all[i] <= f_port_i_data_count_all[i] + 1; //所有包
                
@@ -447,7 +473,8 @@ module tb_network
          end
       end else begin
          for(int i=0; i<`NODES; i++) begin
-            if(l_data_val_FFtoN[i] && (f_total_i_data_count_all >= WARMUP_PACKETS) 
+            if(l_data_val_FFtoN[i] && i_en_FF[i]
+				                       && (f_total_i_data_count_all >= WARMUP_PACKETS) 
                                    && (f_total_i_data_count_all < (WARMUP_PACKETS + MEASURE_PACKETS)))begin
                f_measure_port_i_packet_count_all[i] <= f_measure_port_i_packet_count_all[i] + 1;
                   
@@ -672,7 +699,7 @@ module tb_network
    // ====================================================== Simulation =========================================================
    // Simulation:  System Clock ----------------------------------
    initial begin
-	   rand_hotspots_num = $urandom_range(`NODES-1, 1)+2;
+	   rand_hotspots_num = $urandom_range(`NODES-1, 4);
 		//rand_hotspots[0] = 0;
 		//rand_hotspots[rand_hotspots_num-1]=`NODES;
 	   for (int i=0; i<rand_hotspots_num; i++)begin
@@ -706,7 +733,7 @@ module tb_network
 	
    // Simulation:  Run Period -------------------------------------
    initial begin
-      #(CLK_PERIOD * `warmup_packets_num*20) $finish;
+	   #(CLK_PERIOD * `warmup_packets_num*20) $finish;
    end
 			
 /************************************************************************************************************************************************
@@ -736,7 +763,7 @@ module tb_network
          //show total packets message in the end
          if (f_time == `warmup_packets_num*20-1) begin
             $display("");
-            $display(" # Total cycles: %g",`warmup_packets_num*20-f_time_begin);
+            $display(" # Total cycles: %g",f_time_finish-f_time_begin);
             $display(" # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
             $display("");
 				
@@ -766,535 +793,2645 @@ module tb_network
 			
    /*************************************************************************************************************************************
 
-                                                      写到 XY_routing/uniform.txt 文件
+                                                      写到 XY_routing/uniform/stats.txt 文件
+	
+{ //config
+    "aco_packet_injection_rate": 10,
+    "enable_debugging": false,
+    "link_delay": 1,
+    "link_width": 4,
+    "max_cycles": 1000,
+    "max_injection_buffer_size": 32,
+    "max_input_buffer_size": 20,
+    "max_packets": -1,
+    "no_drain": true,
+    "num_nodes": 64,
+    "num_virtual_channels": 4,
+    "packet_injection_rate": 10,
+    "packet_size": 16,
+    "rand_seed": 13,
+    "reinforcement_factor": 0.05,
+    "result_dir": "results/j_10/t_hotspot/r_odd_even/s_aco/",
+    "routing": "odd_even",
+    "selection": "aco",
+    "traffic": "hotspot"
+}
+{ //stats
+    "acopacket.average_packet_delay": 221.22202359671076,
+    "acopacket.max_packet_delay": 905,
+    "acopacket.num_packets_received": 3920,
+    "acopacket.num_packets_transmitted": 1567,
+    "acopacket.throughput": 0.024484375,
+    "average_packet_delay": 395.35395066142297,
+    "max_packet_delay": 940,
+    "num_packets_received": 6760,
+    "num_packets_transmitted": 2797,
+    "packet.average_packet_delay": 174.1319270647122,
+    "packet.max_packet_delay": 940,
+    "packet.num_packets_received": 2840,
+    "packet.num_packets_transmitted": 1230,
+    "packet.throughput": 0.01921875,
+    "simulation_time": 73.83912818200042,
+    "throughput": 0.043703125,
+    "total_cycles": 1000
+}
+{ //config
+    "aco_packet_injection_rate":100,
+    //"enable_debugging": false,
+    //"link_delay": 1,
+    //"link_width": 4,
+    "max_cycles":`warmup_packets_num*20,
+    //"max_injection_buffer_size": 32,
+    //"max_input_buffer_size": 20,
+    //"max_packets": -1,
+    //"no_drain": true,
+    //"num_nodes": 64,
+    //"num_virtual_channels": 4,
+    "packet_injection_rate":PACKET_RATE,
+    //"packet_size": 16,
+    //"rand_seed": 13,
+    //"reinforcement_factor": 0.05,
+    //"result_dir": "results/j_10/t_hotspot/r_odd_even/s_aco/",
+    "routing": "odd_even",
+    "selection": "aco",
+    "traffic": "hotspot"
+}
+{ //stats
+    "total_cycles":`warmup_packets_num*20,
+    "measure_cycles":MEASURE_PACKETS,
+    "throughput":f_throughput_o_all,
+    "num_packets_transmitted":f_measure_total_i_packet_count_all,
+    "num_packets_received":f_measure_total_o_packet_count_all,
+    "average_packet_delay":f_average_latency_all,
+    "max_packet_delay":f_max_latency_all,
+    "packet.throughput":f_throughput_o_normal,
+    "packet.num_packets_transmitted":f_measure_total_i_packet_count_normal,
+    "packet.num_packets_received":f_measure_total_o_packet_count_normal,
+    "packet.average_packet_delay":f_average_latency_normal,
+    "packet.max_packet_delay":f_max_latency_normal,
+    "acopacket.throughput":f_throughput_o_ant,
+    "acopacket.num_packets_transmitted":f_measure_total_i_packet_count_ant,
+    "acopacket.num_packets_received":f_measure_total_o_packet_count_ant,
+    "acopacket.average_packet_delay":f_average_latency_ant,
+    "acopacket.max_packet_delay":f_max_latency_ant,
+}				
+	function void wr_file(file_id,f_time,f_time_begin,f_total_i_data_count_all,f_total_o_data_count_all,f_measure_total_i_packet_count_all,f_measure_total_o_packet_count_all,f_throughput_o_all,f_average_latency_all,f_max_latency_all,f_measure_total_i_packet_count_normal,f_measure_total_o_packet_count_normal,f_throughput_o_normal,f_average_latency_normal,f_max_latency_normal,f_measure_total_i_packet_count_ant,f_measure_total_o_packet_count_ant,f_throughput_o_ant,f_average_latency_ant,f_max_latency_ant);
+		
+			if (f_time == `warmup_packets_num*20-1) begin
+	
+				$fdisplay(file_id,"");
+				$fdisplay(file_id,"Total cycles,%g,f_time_finish-f_time_begin);
+				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
+				$fdisplay(file_id,"",);
+				
+				$fdisplay(file_id," -- All packets:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
+//				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Normal packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Ant packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
+				$fdisplay(file_id,"");
+			
+				$fclose(file_id);
+			end
+			wr_file = 1;
+	endfunction:wr_file
 	
 	*************************************************************************************************************************************/
+   /*************************************************************************************************************************************
 
-			if(routing_type == 0 && traffic_type == 0)begin
+	*************************************************************************************************************************************/
+			if(PACKET_RATE == 1 && traffic_type == 1 && routing_type == 1 && selection_type == 1)begin
             file_id = $fopen(
-"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/my_simulation_result/XY_routing/uniform.txt");
-			   //$fdisplay(file_id, "%format_char", parameter);
-
-				//show total packets message in the end
-				if (f_time == `warmup_packets_num*20-1) begin
-					$fdisplay(file_id,"");
-					$fdisplay(file_id," # Total cycles: %g",`warmup_packets_num*20-f_time_begin);
-					$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
-					$fdisplay(file_id,"",);
-					
-					$fdisplay(file_id," -- All packets:");
-					$fdisplay(file_id,"      # Packets transmitted: %g, # Packets received: %g",
-															  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
-					$fdisplay(file_id,"      # Throughput: %g packets/cycle/node", f_throughput_o_all);
-					$fdisplay(file_id,"      # Average packet latency: %g cycles", f_average_latency_all);
-					$fdisplay(file_id,"      # Max packet latency: %g cycles", f_max_latency_all);
-					$fdisplay(file_id,"");
-					$fdisplay(file_id," -- Normal packet:");
-					$fdisplay(file_id,"      # Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
-					$fdisplay(file_id,"      # Throughput: %g packets/cycle/node", f_throughput_o_normal);
-					$fdisplay(file_id,"      # Average packet latency: %g cycles", f_average_latency_normal);
-					$fdisplay(file_id,"      # Max packet latency: %g cycles", f_max_latency_normal);
-					$fdisplay(file_id,"");
-					$fdisplay(file_id," -- Ant packet:");
-					$fdisplay(file_id,"      # Packets transmitted: %g, # Packets received: %g",
-															  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
-					$fdisplay(file_id,"      # Throughput: %g packets/cycle/node", f_throughput_o_ant);
-					$fdisplay(file_id,"      # Average packet latency: %g cycles", f_average_latency_ant);
-					$fdisplay(file_id,"      # Max packet latency: %g cycles", f_max_latency_ant);
-					$fdisplay(file_id,"");
-					
-				   $fclose(file_id);
-				end
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_1/t_uniform/r_xy/s_random/stats.txt");
+				/*wr_file(file_id,f_time,f_time_begin,f_total_i_data_count_all,f_total_o_data_count_all,f_measure_total_i_packet_count_all,f_measure_total_o_packet_count_all,f_throughput_o_all,f_average_latency_all,f_max_latency_all,f_measure_total_i_packet_count_normal,f_measure_total_o_packet_count_normal,f_throughput_o_normal,f_average_latency_normal,f_max_latency_normal,f_measure_total_i_packet_count_ant,f_measure_total_o_packet_count_ant,f_throughput_o_ant,f_average_latency_ant,f_max_latency_ant);*/
+				
+			if (f_time == `warmup_packets_num*20-1) begin
+	
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
+				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
+				$fdisplay(file_id,"",);
+				
+				$fdisplay(file_id," -- All packets:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Normal packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Ant packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
+				$fdisplay(file_id,"");
+			
+				$fclose(file_id);
+			end
 			end
 			
    /*************************************************************************************************************************************
 
-                                                      写到 XY_routing/transpose.txt 文件
-	
 	*************************************************************************************************************************************/
 
-			if(routing_type == 0 && traffic_type == 1)begin
+			if(PACKET_RATE == 1 && traffic_type == 1 && routing_type == 2 && selection_type == 1)begin
             file_id = $fopen(
-"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/my_simulation_result/XY_routing/transpose.txt");
-			   //$fdisplay(file_id, "%format_char", parameter);
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_1/t_uniform/r_odd_even/s_random/stats.txt");
 
-				//show total packets message in the end
-				if (f_time == `warmup_packets_num*20-1) begin
-					$fdisplay(file_id,"");
-					$fdisplay(file_id," # Total cycles: %g",`warmup_packets_num*20-f_time_begin);
-					$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
-					$fdisplay(file_id,"",);
-					
-					$fdisplay(file_id," -- All packets:");
-					$fdisplay(file_id,"      # Packets transmitted: %g, # Packets received: %g",
-															  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
-					$fdisplay(file_id,"      # Throughput: %g packets/cycle/node", f_throughput_o_all);
-					$fdisplay(file_id,"      # Average packet latency: %g cycles", f_average_latency_all);
-					$fdisplay(file_id,"      # Max packet latency: %g cycles", f_max_latency_all);
-					$fdisplay(file_id,"");
-					$fdisplay(file_id," -- Normal packet:");
-					$fdisplay(file_id,"      # Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
-					$fdisplay(file_id,"      # Throughput: %g packets/cycle/node", f_throughput_o_normal);
-					$fdisplay(file_id,"      # Average packet latency: %g cycles", f_average_latency_normal);
-					$fdisplay(file_id,"      # Max packet latency: %g cycles", f_max_latency_normal);
-					$fdisplay(file_id,"");
-					$fdisplay(file_id," -- Ant packet:");
-					$fdisplay(file_id,"      # Packets transmitted: %g, # Packets received: %g",
-															  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
-					$fdisplay(file_id,"      # Throughput: %g packets/cycle/node", f_throughput_o_ant);
-					$fdisplay(file_id,"      # Average packet latency: %g cycles", f_average_latency_ant);
-					$fdisplay(file_id,"      # Max packet latency: %g cycles", f_max_latency_ant);
-					$fdisplay(file_id,"");
-					
-				   $fclose(file_id);
-				end
+			if (f_time == `warmup_packets_num*20-1) begin
+	
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
+				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
+				$fdisplay(file_id,"",);
+				
+				$fdisplay(file_id," -- All packets:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Normal packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Ant packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
+				$fdisplay(file_id,"");
+			
+				$fclose(file_id);
+			end
 			end
 			
    /*************************************************************************************************************************************
 
-                                                      写到 XY_routing/hotspot.txt 文件
-	
 	*************************************************************************************************************************************/
 
-			if(routing_type == 0 && traffic_type == 2)begin
+			if(PACKET_RATE == 1 && traffic_type == 1 && routing_type == 2 && selection_type == 2)begin
             file_id = $fopen(
-"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/my_simulation_result/XY_routing/hotspot.txt");
-			   //$fdisplay(file_id, "%format_char", parameter);
-
-				//show total packets message in the end
-				if (f_time == `warmup_packets_num*20-1) begin
-					$fdisplay(file_id,"");
-					$fdisplay(file_id," # Total cycles: %g",`warmup_packets_num*20-f_time_begin);
-					$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
-					$fdisplay(file_id,"",);
-					
-					$fdisplay(file_id," -- All packets:");
-					$fdisplay(file_id,"      # Packets transmitted: %g, # Packets received: %g",
-															  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
-					$fdisplay(file_id,"      # Throughput: %g packets/cycle/node", f_throughput_o_all);
-					$fdisplay(file_id,"      # Average packet latency: %g cycles", f_average_latency_all);
-					$fdisplay(file_id,"      # Max packet latency: %g cycles", f_max_latency_all);
-					$fdisplay(file_id,"");
-					$fdisplay(file_id," -- Normal packet:");
-					$fdisplay(file_id,"      # Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
-					$fdisplay(file_id,"      # Throughput: %g packets/cycle/node", f_throughput_o_normal);
-					$fdisplay(file_id,"      # Average packet latency: %g cycles", f_average_latency_normal);
-					$fdisplay(file_id,"      # Max packet latency: %g cycles", f_max_latency_normal);
-					$fdisplay(file_id,"");
-					$fdisplay(file_id," -- Ant packet:");
-					$fdisplay(file_id,"      # Packets transmitted: %g, # Packets received: %g",
-															  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
-					$fdisplay(file_id,"      # Throughput: %g packets/cycle/node", f_throughput_o_ant);
-					$fdisplay(file_id,"      # Average packet latency: %g cycles", f_average_latency_ant);
-					$fdisplay(file_id,"      # Max packet latency: %g cycles", f_max_latency_ant);
-					$fdisplay(file_id,"");
-					
-				   $fclose(file_id);
-				end
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_1/t_uniform/r_odd_even/s_buffer_level/stats.txt");
+			   
+			if (f_time == `warmup_packets_num*20-1) begin
+	
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
+				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
+				$fdisplay(file_id,"",);
+				
+				$fdisplay(file_id," -- All packets:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Normal packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Ant packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
+				$fdisplay(file_id,"");
+			
+				$fclose(file_id);
+			end
 			end
 			
    /*************************************************************************************************************************************
 
-                                                      写到 Odd_even--Random/uniform.txt 文件
-	
 	*************************************************************************************************************************************/
 
-			if(routing_type == 1 && traffic_type == 0)begin
+			if(PACKET_RATE == 1 && traffic_type == 1 && routing_type == 2 && selection_type == 3)begin
             file_id = $fopen(
-"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/my_simulation_result/Odd_even--Random/uniform.txt");
-			   //$fdisplay(file_id, "%format_char", parameter);
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_1/t_uniform/r_odd_even/s_aco/stats.txt");
+			   
+			if (f_time == `warmup_packets_num*20-1) begin
+	
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
+				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
+				$fdisplay(file_id,"",);
+				
+				$fdisplay(file_id," -- All packets:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Normal packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Ant packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
+				$fdisplay(file_id,"");
+			
+				$fclose(file_id);
+			end
+			end
 
-				//show total packets message in the end
-				if (f_time == `warmup_packets_num*20-1) begin
-					$fdisplay(file_id,"");
-					$fdisplay(file_id," # Total cycles: %g",`warmup_packets_num*20-f_time_begin);
-					$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
-					$fdisplay(file_id,"",);
-					
-					$fdisplay(file_id," -- All packets:");
-					$fdisplay(file_id,"      # Packets transmitted: %g, # Packets received: %g",
-															  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
-					$fdisplay(file_id,"      # Throughput: %g packets/cycle/node", f_throughput_o_all);
-					$fdisplay(file_id,"      # Average packet latency: %g cycles", f_average_latency_all);
-					$fdisplay(file_id,"      # Max packet latency: %g cycles", f_max_latency_all);
-					$fdisplay(file_id,"");
-					$fdisplay(file_id," -- Normal packet:");
-					$fdisplay(file_id,"      # Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
-					$fdisplay(file_id,"      # Throughput: %g packets/cycle/node", f_throughput_o_normal);
-					$fdisplay(file_id,"      # Average packet latency: %g cycles", f_average_latency_normal);
-					$fdisplay(file_id,"      # Max packet latency: %g cycles", f_max_latency_normal);
-					$fdisplay(file_id,"");
-					$fdisplay(file_id," -- Ant packet:");
-					$fdisplay(file_id,"      # Packets transmitted: %g, # Packets received: %g",
-															  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
-					$fdisplay(file_id,"      # Throughput: %g packets/cycle/node", f_throughput_o_ant);
-					$fdisplay(file_id,"      # Average packet latency: %g cycles", f_average_latency_ant);
-					$fdisplay(file_id,"      # Max packet latency: %g cycles", f_max_latency_ant);
-					$fdisplay(file_id,"");
+   /*************************************************************************************************************************************
 
-				   $fclose(file_id);
-				end
+	*************************************************************************************************************************************/
+			if(PACKET_RATE == 1 && traffic_type == 2 && routing_type == 1 && selection_type == 1)begin
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_1/t_transpose/r_xy/s_random/stats.txt");
+			   
+			if (f_time == `warmup_packets_num*20-1) begin
+	
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
+				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
+				$fdisplay(file_id,"",);
+				
+				$fdisplay(file_id," -- All packets:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Normal packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Ant packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
+				$fdisplay(file_id,"");
+			
+				$fclose(file_id);
+			end
 			end
 			
    /*************************************************************************************************************************************
 
-                                                      写到 Odd_even--Random/transpose.txt 文件
-	
 	*************************************************************************************************************************************/
 
-			if(routing_type == 1 && traffic_type == 1)begin
+			if(PACKET_RATE == 1 && traffic_type == 2 && routing_type == 2 && selection_type == 1)begin
             file_id = $fopen(
-"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/my_simulation_result/Odd_even--Random/transpose.txt");
-			   //$fdisplay(file_id, "%format_char", parameter);
-
-				//show total packets message in the end
-				if (f_time == `warmup_packets_num*20-1) begin
-					$fdisplay(file_id,"");
-					$fdisplay(file_id," # Total cycles: %g",`warmup_packets_num*20-f_time_begin);
-					$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
-					$fdisplay(file_id,"",);
-					
-					$fdisplay(file_id," -- All packets:");
-					$fdisplay(file_id,"      # Packets transmitted: %g, # Packets received: %g",
-															  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
-					$fdisplay(file_id,"      # Throughput: %g packets/cycle/node", f_throughput_o_all);
-					$fdisplay(file_id,"      # Average packet latency: %g cycles", f_average_latency_all);
-					$fdisplay(file_id,"      # Max packet latency: %g cycles", f_max_latency_all);
-					$fdisplay(file_id,"");
-					$fdisplay(file_id," -- Normal packet:");
-					$fdisplay(file_id,"      # Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
-					$fdisplay(file_id,"      # Throughput: %g packets/cycle/node", f_throughput_o_normal);
-					$fdisplay(file_id,"      # Average packet latency: %g cycles", f_average_latency_normal);
-					$fdisplay(file_id,"      # Max packet latency: %g cycles", f_max_latency_normal);
-					$fdisplay(file_id,"");
-					$fdisplay(file_id," -- Ant packet:");
-					$fdisplay(file_id,"      # Packets transmitted: %g, # Packets received: %g",
-															  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
-					$fdisplay(file_id,"      # Throughput: %g packets/cycle/node", f_throughput_o_ant);
-					$fdisplay(file_id,"      # Average packet latency: %g cycles", f_average_latency_ant);
-					$fdisplay(file_id,"      # Max packet latency: %g cycles", f_max_latency_ant);
-					$fdisplay(file_id,"");
-
-				   $fclose(file_id);
-				end
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_1/t_transpose/r_odd_even/s_random/stats.txt");
+			   
+			if (f_time == `warmup_packets_num*20-1) begin
+	
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
+				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
+				$fdisplay(file_id,"",);
+				
+				$fdisplay(file_id," -- All packets:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Normal packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Ant packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
+				$fdisplay(file_id,"");
+			
+				$fclose(file_id);
+			end
 			end
 			
    /*************************************************************************************************************************************
 
-                                                      写到 Odd_even--Random/hotspot.txt 文件
-	
 	*************************************************************************************************************************************/
 
-			if(routing_type == 1 && traffic_type == 2)begin
+			if(PACKET_RATE == 1 && traffic_type == 2 && routing_type == 2 && selection_type == 2)begin
             file_id = $fopen(
-"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/my_simulation_result/Odd_even--Random/hotspot.txt");
-			   //$fdisplay(file_id, "%format_char", parameter);
-
-				//show total packets message in the end
-				if (f_time == `warmup_packets_num*20-1) begin
-					$fdisplay(file_id,"");
-					$fdisplay(file_id," # Total cycles: %g",`warmup_packets_num*20-f_time_begin);
-					$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
-					$fdisplay(file_id,"",);
-					
-					$fdisplay(file_id," -- All packets:");
-					$fdisplay(file_id,"      # Packets transmitted: %g, # Packets received: %g",
-															  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
-					$fdisplay(file_id,"      # Throughput: %g packets/cycle/node", f_throughput_o_all);
-					$fdisplay(file_id,"      # Average packet latency: %g cycles", f_average_latency_all);
-					$fdisplay(file_id,"      # Max packet latency: %g cycles", f_max_latency_all);
-					$fdisplay(file_id,"");
-					$fdisplay(file_id," -- Normal packet:");
-					$fdisplay(file_id,"      # Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
-					$fdisplay(file_id,"      # Throughput: %g packets/cycle/node", f_throughput_o_normal);
-					$fdisplay(file_id,"      # Average packet latency: %g cycles", f_average_latency_normal);
-					$fdisplay(file_id,"      # Max packet latency: %g cycles", f_max_latency_normal);
-					$fdisplay(file_id,"");
-					$fdisplay(file_id," -- Ant packet:");
-					$fdisplay(file_id,"      # Packets transmitted: %g, # Packets received: %g",
-															  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
-					$fdisplay(file_id,"      # Throughput: %g packets/cycle/node", f_throughput_o_ant);
-					$fdisplay(file_id,"      # Average packet latency: %g cycles", f_average_latency_ant);
-					$fdisplay(file_id,"      # Max packet latency: %g cycles", f_max_latency_ant);
-					$fdisplay(file_id,"");
-
-				   $fclose(file_id);
-				end
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_1/t_transpose/r_odd_even/s_buffer_level/stats.txt");
+			   
+			if (f_time == `warmup_packets_num*20-1) begin
+	
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
+				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
+				$fdisplay(file_id,"",);
+				
+				$fdisplay(file_id," -- All packets:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Normal packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Ant packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
+				$fdisplay(file_id,"");
+			
+				$fclose(file_id);
+			end
 			end
 			
    /*************************************************************************************************************************************
 
-                                                      写到 Odd_even--OBL/uniform.txt 文件
-	
 	*************************************************************************************************************************************/
 
-			if(routing_type == 2 && traffic_type == 0)begin
+			if(PACKET_RATE == 1 && traffic_type == 2 && routing_type == 2 && selection_type == 3)begin
             file_id = $fopen(
-"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/my_simulation_result/Odd_even--OBL/uniform.txt");
-			   //$fdisplay(file_id, "%format_char", parameter);
-
-				//show total packets message in the end
-				if (f_time == `warmup_packets_num*20-1) begin
-					$fdisplay(file_id,"");
-					$fdisplay(file_id," # Total cycles: %g",`warmup_packets_num*20-f_time_begin);
-					$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
-					$fdisplay(file_id,"",);
-					
-					$fdisplay(file_id," -- All packets:");
-					$fdisplay(file_id,"      # Packets transmitted: %g, # Packets received: %g",
-															  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
-					$fdisplay(file_id,"      # Throughput: %g packets/cycle/node", f_throughput_o_all);
-					$fdisplay(file_id,"      # Average packet latency: %g cycles", f_average_latency_all);
-					$fdisplay(file_id,"      # Max packet latency: %g cycles", f_max_latency_all);
-					$fdisplay(file_id,"");
-					$fdisplay(file_id," -- Normal packet:");
-					$fdisplay(file_id,"      # Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
-					$fdisplay(file_id,"      # Throughput: %g packets/cycle/node", f_throughput_o_normal);
-					$fdisplay(file_id,"      # Average packet latency: %g cycles", f_average_latency_normal);
-					$fdisplay(file_id,"      # Max packet latency: %g cycles", f_max_latency_normal);
-					$fdisplay(file_id,"");
-					$fdisplay(file_id," -- Ant packet:");
-					$fdisplay(file_id,"      # Packets transmitted: %g, # Packets received: %g",
-															  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
-					$fdisplay(file_id,"      # Throughput: %g packets/cycle/node", f_throughput_o_ant);
-					$fdisplay(file_id,"      # Average packet latency: %g cycles", f_average_latency_ant);
-					$fdisplay(file_id,"      # Max packet latency: %g cycles", f_max_latency_ant);
-					$fdisplay(file_id,"");
-
-				   $fclose(file_id);
-				end
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_1/t_transpose/r_odd_even/s_aco/stats.txt");
+			   
+			if (f_time == `warmup_packets_num*20-1) begin
+	
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
+				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
+				$fdisplay(file_id,"",);
+				
+				$fdisplay(file_id," -- All packets:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Normal packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Ant packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
+				$fdisplay(file_id,"");
+			
+				$fclose(file_id);
+			end
 			end
 			
    /*************************************************************************************************************************************
 
-                                                      写到 Odd_even--OBL/transpose.txt 文件
-	
 	*************************************************************************************************************************************/
-
-			if(routing_type == 2 && traffic_type == 1)begin
+			if(PACKET_RATE == 1 && traffic_type == 3 && routing_type == 1 && selection_type == 1)begin
             file_id = $fopen(
-"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/my_simulation_result/Odd_even--OBL/transpose.txt");
-			   //$fdisplay(file_id, "%format_char", parameter);
-
-				//show total packets message in the end
-				if (f_time == `warmup_packets_num*20-1) begin
-					$fdisplay(file_id,"");
-					$fdisplay(file_id," # Total cycles: %g",`warmup_packets_num*20-f_time_begin);
-					$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
-					$fdisplay(file_id,"",);
-					
-					$fdisplay(file_id," -- All packets:");
-					$fdisplay(file_id,"      # Packets transmitted: %g, # Packets received: %g",
-															  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
-					$fdisplay(file_id,"      # Throughput: %g packets/cycle/node", f_throughput_o_all);
-					$fdisplay(file_id,"      # Average packet latency: %g cycles", f_average_latency_all);
-					$fdisplay(file_id,"      # Max packet latency: %g cycles", f_max_latency_all);
-					$fdisplay(file_id,"");
-					$fdisplay(file_id," -- Normal packet:");
-					$fdisplay(file_id,"      # Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
-					$fdisplay(file_id,"      # Throughput: %g packets/cycle/node", f_throughput_o_normal);
-					$fdisplay(file_id,"      # Average packet latency: %g cycles", f_average_latency_normal);
-					$fdisplay(file_id,"      # Max packet latency: %g cycles", f_max_latency_normal);
-					$fdisplay(file_id,"");
-					$fdisplay(file_id," -- Ant packet:");
-					$fdisplay(file_id,"      # Packets transmitted: %g, # Packets received: %g",
-															  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
-					$fdisplay(file_id,"      # Throughput: %g packets/cycle/node", f_throughput_o_ant);
-					$fdisplay(file_id,"      # Average packet latency: %g cycles", f_average_latency_ant);
-					$fdisplay(file_id,"      # Max packet latency: %g cycles", f_max_latency_ant);
-					$fdisplay(file_id,"");
-
-				   $fclose(file_id);
-				end
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_1/t_hotspot/r_xy/s_random/stats.txt");
+			   
+			if (f_time == `warmup_packets_num*20-1) begin
+	
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
+				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
+				$fdisplay(file_id,"",);
+				
+				$fdisplay(file_id," -- All packets:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Normal packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Ant packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
+				$fdisplay(file_id,"");
+			
+				$fclose(file_id);
+			end
 			end
 			
    /*************************************************************************************************************************************
 
-                                                      写到 Odd_even--OBL/hotspot.txt 文件
-	
 	*************************************************************************************************************************************/
 
-			if(routing_type == 2 && traffic_type == 2)begin
+			if(PACKET_RATE == 1 && traffic_type == 3 && routing_type == 2 && selection_type == 1)begin
             file_id = $fopen(
-"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/my_simulation_result/Odd_even--OBL/hotspot.txt");
-			   //$fdisplay(file_id, "%format_char", parameter);
-
-				//show total packets message in the end
-				if (f_time == `warmup_packets_num*20-1) begin
-					$fdisplay(file_id,"");
-					$fdisplay(file_id," # Total cycles: %g",`warmup_packets_num*20-f_time_begin);
-					$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
-					$fdisplay(file_id,"",);
-					
-					$fdisplay(file_id," -- All packets:");
-					$fdisplay(file_id,"      # Packets transmitted: %g, # Packets received: %g",
-															  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
-					$fdisplay(file_id,"      # Throughput: %g packets/cycle/node", f_throughput_o_all);
-					$fdisplay(file_id,"      # Average packet latency: %g cycles", f_average_latency_all);
-					$fdisplay(file_id,"      # Max packet latency: %g cycles", f_max_latency_all);
-					$fdisplay(file_id,"");
-					$fdisplay(file_id," -- Normal packet:");
-					$fdisplay(file_id,"      # Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
-					$fdisplay(file_id,"      # Throughput: %g packets/cycle/node", f_throughput_o_normal);
-					$fdisplay(file_id,"      # Average packet latency: %g cycles", f_average_latency_normal);
-					$fdisplay(file_id,"      # Max packet latency: %g cycles", f_max_latency_normal);
-					$fdisplay(file_id,"");
-					$fdisplay(file_id," -- Ant packet:");
-					$fdisplay(file_id,"      # Packets transmitted: %g, # Packets received: %g",
-															  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
-					$fdisplay(file_id,"      # Throughput: %g packets/cycle/node", f_throughput_o_ant);
-					$fdisplay(file_id,"      # Average packet latency: %g cycles", f_average_latency_ant);
-					$fdisplay(file_id,"      # Max packet latency: %g cycles", f_max_latency_ant);
-					$fdisplay(file_id,"");
-
-				   $fclose(file_id);
-				end
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_1/t_hotspot/r_odd_even/s_random/stats.txt");
+			   
+			if (f_time == `warmup_packets_num*20-1) begin
+	
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
+				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
+				$fdisplay(file_id,"",);
+				
+				$fdisplay(file_id," -- All packets:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Normal packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Ant packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
+				$fdisplay(file_id,"");
+			
+				$fclose(file_id);
+			end
 			end
 			
    /*************************************************************************************************************************************
 
-                                                      写到 Odd_even--ACO/uniform.txt 文件
-	
 	*************************************************************************************************************************************/
 
-			if(routing_type == 3 && traffic_type == 0)begin
+			if(PACKET_RATE == 1 && traffic_type == 3 && routing_type == 2 && selection_type == 2)begin
             file_id = $fopen(
-"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/my_simulation_result/Odd_even--ACO/uniform.txt");
-			   //$fdisplay(file_id, "%format_char", parameter);
-
-				//show total packets message in the end
-				if (f_time == `warmup_packets_num*20-1) begin
-					$fdisplay(file_id,"");
-					$fdisplay(file_id," # Total cycles: %g",`warmup_packets_num*20-f_time_begin);
-					$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
-					$fdisplay(file_id,"",);
-					
-					$fdisplay(file_id," -- All packets:");
-					$fdisplay(file_id,"      # Packets transmitted: %g, # Packets received: %g",
-															  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
-					$fdisplay(file_id,"      # Throughput: %g packets/cycle/node", f_throughput_o_all);
-					$fdisplay(file_id,"      # Average packet latency: %g cycles", f_average_latency_all);
-					$fdisplay(file_id,"      # Max packet latency: %g cycles", f_max_latency_all);
-					$fdisplay(file_id,"");
-					$fdisplay(file_id," -- Normal packet:");
-					$fdisplay(file_id,"      # Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
-					$fdisplay(file_id,"      # Throughput: %g packets/cycle/node", f_throughput_o_normal);
-					$fdisplay(file_id,"      # Average packet latency: %g cycles", f_average_latency_normal);
-					$fdisplay(file_id,"      # Max packet latency: %g cycles", f_max_latency_normal);
-					$fdisplay(file_id,"");
-					$fdisplay(file_id," -- Ant packet:");
-					$fdisplay(file_id,"      # Packets transmitted: %g, # Packets received: %g",
-															  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
-					$fdisplay(file_id,"      # Throughput: %g packets/cycle/node", f_throughput_o_ant);
-					$fdisplay(file_id,"      # Average packet latency: %g cycles", f_average_latency_ant);
-					$fdisplay(file_id,"      # Max packet latency: %g cycles", f_max_latency_ant);
-					$fdisplay(file_id,"");
-
-				   $fclose(file_id);
-				end
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_1/t_hotspot/r_odd_even/s_buffer_level/stats.txt");
+			   
+			if (f_time == `warmup_packets_num*20-1) begin
+	
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
+				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
+				$fdisplay(file_id,"",);
+				
+				$fdisplay(file_id," -- All packets:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Normal packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Ant packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
+				$fdisplay(file_id,"");
+			
+				$fclose(file_id);
+			end
 			end
 			
    /*************************************************************************************************************************************
 
-                                                      写到 Odd_even--ACO/transpose.txt 文件
-	
 	*************************************************************************************************************************************/
 
-			if(routing_type == 3 && traffic_type == 1)begin
+			if(PACKET_RATE == 1 && traffic_type == 3 && routing_type == 2 && selection_type == 3)begin
             file_id = $fopen(
-"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/my_simulation_result/Odd_even--ACO/transpose.txt");
-			   //$fdisplay(file_id, "%format_char", parameter);
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_1/t_hotspot/r_odd_even/s_aco/stats.txt");
+			   
+			if (f_time == `warmup_packets_num*20-1) begin
+	
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
+				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
+				$fdisplay(file_id,"",);
+				
+				$fdisplay(file_id," -- All packets:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Normal packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Ant packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
+				$fdisplay(file_id,"");
+			
+				$fclose(file_id);
+			end
+			end
+			
+			
+			
+			
+			
+			
+			
+   /*************************************************************************************************************************************
 
-				//show total packets message in the end
-				if (f_time == `warmup_packets_num*20-1) begin
-					$fdisplay(file_id,"");
-					$fdisplay(file_id," # Total cycles: %g",`warmup_packets_num*20-f_time_begin);
-					$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
-					$fdisplay(file_id,"",);
-					
-					$fdisplay(file_id," -- All packets:");
-					$fdisplay(file_id,"      # Packets transmitted: %g, # Packets received: %g",
-															  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
-					$fdisplay(file_id,"      # Throughput: %g packets/cycle/node", f_throughput_o_all);
-					$fdisplay(file_id,"      # Average packet latency: %g cycles", f_average_latency_all);
-					$fdisplay(file_id,"      # Max packet latency: %g cycles", f_max_latency_all);
-					$fdisplay(file_id,"");
-					$fdisplay(file_id," -- Normal packet:");
-					$fdisplay(file_id,"      # Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
-					$fdisplay(file_id,"      # Throughput: %g packets/cycle/node", f_throughput_o_normal);
-					$fdisplay(file_id,"      # Average packet latency: %g cycles", f_average_latency_normal);
-					$fdisplay(file_id,"      # Max packet latency: %g cycles", f_max_latency_normal);
-					$fdisplay(file_id,"");
-					$fdisplay(file_id," -- Ant packet:");
-					$fdisplay(file_id,"      # Packets transmitted: %g, # Packets received: %g",
-															  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
-					$fdisplay(file_id,"      # Throughput: %g packets/cycle/node", f_throughput_o_ant);
-					$fdisplay(file_id,"      # Average packet latency: %g cycles", f_average_latency_ant);
-					$fdisplay(file_id,"      # Max packet latency: %g cycles", f_max_latency_ant);
-					$fdisplay(file_id,"");
-					
-				   $fclose(file_id);
-				end
+	*************************************************************************************************************************************/
+			if(PACKET_RATE == 5 && traffic_type == 1 && routing_type == 1 && selection_type == 1)begin
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_5/t_uniform/r_xy/s_random/stats.txt");
+			   
+			if (f_time == `warmup_packets_num*20-1) begin
+	
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
+				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
+				$fdisplay(file_id,"",);
+				
+				$fdisplay(file_id," -- All packets:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Normal packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Ant packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
+				$fdisplay(file_id,"");
+			
+				$fclose(file_id);
+			end
 			end
 			
    /*************************************************************************************************************************************
 
-                                                      写到 Odd_even--ACO/hotspot.txt 文件
-	
 	*************************************************************************************************************************************/
 
-			if(routing_type == 3 && traffic_type == 2)begin
+			if(PACKET_RATE == 5 && traffic_type == 1 && routing_type == 2 && selection_type == 1)begin
             file_id = $fopen(
-"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/my_simulation_result/Odd_even--ACO/hotspot.txt");
-			   //$fdisplay(file_id, "%format_char", parameter);
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_5/t_uniform/r_odd_even/s_random/stats.txt");
+			   
+			if (f_time == `warmup_packets_num*20-1) begin
+	
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
+				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
+				$fdisplay(file_id,"",);
+				
+				$fdisplay(file_id," -- All packets:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Normal packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Ant packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
+				$fdisplay(file_id,"");
+			
+				$fclose(file_id);
+			end
+			end
+			
+   /*************************************************************************************************************************************
 
-				//show total packets message in the end
-				if (f_time == `warmup_packets_num*20-1) begin
-					$fdisplay(file_id,"");
-					$fdisplay(file_id," # Total cycles: %g",`warmup_packets_num*20-f_time_begin);
-					$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
-					$fdisplay(file_id,"",);
-					
-					$fdisplay(file_id," -- All packets:");
-					$fdisplay(file_id,"      # Packets transmitted: %g, # Packets received: %g",
-															  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
-					$fdisplay(file_id,"      # Throughput: %g packets/cycle/node", f_throughput_o_all);
-					$fdisplay(file_id,"      # Average packet latency: %g cycles", f_average_latency_all);
-					$fdisplay(file_id,"      # Max packet latency: %g cycles", f_max_latency_all);
-					$fdisplay(file_id,"");
-					$fdisplay(file_id," -- Normal packet:");
-					$fdisplay(file_id,"      # Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
-					$fdisplay(file_id,"      # Throughput: %g packets/cycle/node", f_throughput_o_normal);
-					$fdisplay(file_id,"      # Average packet latency: %g cycles", f_average_latency_normal);
-					$fdisplay(file_id,"      # Max packet latency: %g cycles", f_max_latency_normal);
-					$fdisplay(file_id,"");
-					$fdisplay(file_id," -- Ant packet:");
-					$fdisplay(file_id,"      # Packets transmitted: %g, # Packets received: %g",
-															  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
-					$fdisplay(file_id,"      # Throughput: %g packets/cycle/node", f_throughput_o_ant);
-					$fdisplay(file_id,"      # Average packet latency: %g cycles", f_average_latency_ant);
-					$fdisplay(file_id,"      # Max packet latency: %g cycles", f_max_latency_ant);
-					$fdisplay(file_id,"");
-					
-				   $fclose(file_id);
-				end
+	*************************************************************************************************************************************/
+
+			if(PACKET_RATE == 5 && traffic_type == 1 && routing_type == 2 && selection_type == 2)begin
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_5/t_uniform/r_odd_even/s_buffer_level/stats.txt");
+			   
+			if (f_time == `warmup_packets_num*20-1) begin
+	
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
+				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
+				$fdisplay(file_id,"",);
+				
+				$fdisplay(file_id," -- All packets:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Normal packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Ant packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
+				$fdisplay(file_id,"");
+			
+				$fclose(file_id);
+			end
+			end
+			
+   /*************************************************************************************************************************************
+
+	*************************************************************************************************************************************/
+
+			if(PACKET_RATE == 5 && traffic_type == 1 && routing_type == 2 && selection_type == 3)begin
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_5/t_uniform/r_odd_even/s_aco/stats.txt");
+			   
+			if (f_time == `warmup_packets_num*20-1) begin
+	
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
+				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
+				$fdisplay(file_id,"",);
+				
+				$fdisplay(file_id," -- All packets:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Normal packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Ant packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
+				$fdisplay(file_id,"");
+			
+				$fclose(file_id);
+			end
+			end
+
+   /*************************************************************************************************************************************
+
+	*************************************************************************************************************************************/
+			if(PACKET_RATE == 5 && traffic_type == 2 && routing_type == 1 && selection_type == 1)begin
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_5/t_transpose/r_xy/s_random/stats.txt");
+			   
+			if (f_time == `warmup_packets_num*20-1) begin
+	
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
+				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
+				$fdisplay(file_id,"",);
+				
+				$fdisplay(file_id," -- All packets:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Normal packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Ant packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
+				$fdisplay(file_id,"");
+			
+				$fclose(file_id);
+			end
+			end
+			
+   /*************************************************************************************************************************************
+
+	*************************************************************************************************************************************/
+
+			if(PACKET_RATE == 5 && traffic_type == 2 && routing_type == 2 && selection_type == 1)begin
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_5/t_transpose/r_odd_even/s_random/stats.txt");
+			   
+			if (f_time == `warmup_packets_num*20-1) begin
+	
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
+				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
+				$fdisplay(file_id,"",);
+				
+				$fdisplay(file_id," -- All packets:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Normal packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Ant packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
+				$fdisplay(file_id,"");
+			
+				$fclose(file_id);
+			end
+			end
+			
+   /*************************************************************************************************************************************
+
+	*************************************************************************************************************************************/
+
+			if(PACKET_RATE == 5 && traffic_type == 2 && routing_type == 2 && selection_type == 2)begin
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_5/t_transpose/r_odd_even/s_buffer_level/stats.txt");
+			   
+			if (f_time == `warmup_packets_num*20-1) begin
+	
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
+				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
+				$fdisplay(file_id,"",);
+				
+				$fdisplay(file_id," -- All packets:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Normal packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Ant packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
+				$fdisplay(file_id,"");
+			
+				$fclose(file_id);
+			end
+			end
+			
+   /*************************************************************************************************************************************
+
+	*************************************************************************************************************************************/
+
+			if(PACKET_RATE == 5 && traffic_type == 2 && routing_type == 2 && selection_type == 3)begin
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_5/t_transpose/r_odd_even/s_aco/stats.txt");
+			   
+			if (f_time == `warmup_packets_num*20-1) begin
+	
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
+				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
+				$fdisplay(file_id,"",);
+				
+				$fdisplay(file_id," -- All packets:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Normal packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Ant packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
+				$fdisplay(file_id,"");
+			
+				$fclose(file_id);
+			end
+			end
+			
+   /*************************************************************************************************************************************
+
+	*************************************************************************************************************************************/
+			if(PACKET_RATE == 5 && traffic_type == 3 && routing_type == 1 && selection_type == 1)begin
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_5/t_hotspot/r_xy/s_random/stats.txt");
+			   
+			if (f_time == `warmup_packets_num*20-1) begin
+	
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
+				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
+				$fdisplay(file_id,"",);
+				
+				$fdisplay(file_id," -- All packets:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Normal packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Ant packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
+				$fdisplay(file_id,"");
+			
+				$fclose(file_id);
+			end
+			end
+			
+   /*************************************************************************************************************************************
+
+	*************************************************************************************************************************************/
+
+			if(PACKET_RATE == 5 && traffic_type == 3 && routing_type == 2 && selection_type == 1)begin
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_5/t_hotspot/r_odd_even/s_random/stats.txt");
+			   
+			if (f_time == `warmup_packets_num*20-1) begin
+	
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
+				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
+				$fdisplay(file_id,"",);
+				
+				$fdisplay(file_id," -- All packets:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Normal packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Ant packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
+				$fdisplay(file_id,"");
+			
+				$fclose(file_id);
+			end
+			end
+			
+   /*************************************************************************************************************************************
+
+	*************************************************************************************************************************************/
+
+			if(PACKET_RATE == 5 && traffic_type == 3 && routing_type == 2 && selection_type == 2)begin
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_5/t_hotspot/r_odd_even/s_buffer_level/stats.txt");
+			   
+			if (f_time == `warmup_packets_num*20-1) begin
+	
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
+				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
+				$fdisplay(file_id,"",);
+				
+				$fdisplay(file_id," -- All packets:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Normal packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Ant packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
+				$fdisplay(file_id,"");
+			
+				$fclose(file_id);
+			end
+			end
+			
+   /*************************************************************************************************************************************
+
+	*************************************************************************************************************************************/
+
+			if(PACKET_RATE == 5 && traffic_type == 3 && routing_type == 2 && selection_type == 3)begin
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_5/t_hotspot/r_odd_even/s_aco/stats.txt");
+			   
+			if (f_time == `warmup_packets_num*20-1) begin
+	
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
+				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
+				$fdisplay(file_id,"",);
+				
+				$fdisplay(file_id," -- All packets:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Normal packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Ant packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
+				$fdisplay(file_id,"");
+			
+				$fclose(file_id);
+			end
+			end
+			
+			
+			
+			
+			
+			
+			
+   /*************************************************************************************************************************************
+
+	*************************************************************************************************************************************/
+			if(PACKET_RATE == 10 && traffic_type == 1 && routing_type == 1 && selection_type == 1)begin
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_10/t_uniform/r_xy/s_random/stats.txt");
+			   
+			if (f_time == `warmup_packets_num*20-1) begin
+	
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
+				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
+				$fdisplay(file_id,"",);
+				
+				$fdisplay(file_id," -- All packets:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Normal packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Ant packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
+				$fdisplay(file_id,"");
+			
+				$fclose(file_id);
+			end
+			end
+			
+   /*************************************************************************************************************************************
+
+	*************************************************************************************************************************************/
+
+			if(PACKET_RATE == 10 && traffic_type == 1 && routing_type == 2 && selection_type == 1)begin
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_10/t_uniform/r_odd_even/s_random/stats.txt");
+			   
+			if (f_time == `warmup_packets_num*20-1) begin
+	
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
+				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
+				$fdisplay(file_id,"",);
+				
+				$fdisplay(file_id," -- All packets:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Normal packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Ant packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
+				$fdisplay(file_id,"");
+			
+				$fclose(file_id);
+			end
+			end
+			
+   /*************************************************************************************************************************************
+
+	*************************************************************************************************************************************/
+
+			if(PACKET_RATE == 10 && traffic_type == 1 && routing_type == 2 && selection_type == 2)begin
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_10/t_uniform/r_odd_even/s_buffer_level/stats.txt");
+			   
+			if (f_time == `warmup_packets_num*20-1) begin
+	
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
+				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
+				$fdisplay(file_id,"",);
+				
+				$fdisplay(file_id," -- All packets:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Normal packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Ant packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
+				$fdisplay(file_id,"");
+			
+				$fclose(file_id);
+			end
+			end
+			
+   /*************************************************************************************************************************************
+
+	*************************************************************************************************************************************/
+
+			if(PACKET_RATE == 10 && traffic_type == 1 && routing_type == 2 && selection_type == 3)begin
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_10/t_uniform/r_odd_even/s_aco/stats.txt");
+			   
+			if (f_time == `warmup_packets_num*20-1) begin
+	
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
+				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
+				$fdisplay(file_id,"",);
+				
+				$fdisplay(file_id," -- All packets:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Normal packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Ant packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
+				$fdisplay(file_id,"");
+			
+				$fclose(file_id);
+			end
+			end
+
+   /*************************************************************************************************************************************
+
+	*************************************************************************************************************************************/
+			if(PACKET_RATE == 10 && traffic_type == 2 && routing_type == 1 && selection_type == 1)begin
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_10/t_transpose/r_xy/s_random/stats.txt");
+			   
+			if (f_time == `warmup_packets_num*20-1) begin
+	
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
+				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
+				$fdisplay(file_id,"",);
+				
+				$fdisplay(file_id," -- All packets:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Normal packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Ant packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
+				$fdisplay(file_id,"");
+			
+				$fclose(file_id);
+			end
+			end
+			
+   /*************************************************************************************************************************************
+
+	*************************************************************************************************************************************/
+
+			if(PACKET_RATE == 10 && traffic_type == 2 && routing_type == 2 && selection_type == 1)begin
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_10/t_transpose/r_odd_even/s_random/stats.txt");
+			   
+			if (f_time == `warmup_packets_num*20-1) begin
+	
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
+				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
+				$fdisplay(file_id,"",);
+				
+				$fdisplay(file_id," -- All packets:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Normal packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Ant packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
+				$fdisplay(file_id,"");
+			
+				$fclose(file_id);
+			end
+			end
+			
+   /*************************************************************************************************************************************
+
+	*************************************************************************************************************************************/
+
+			if(PACKET_RATE == 10 && traffic_type == 2 && routing_type == 2 && selection_type == 2)begin
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_10/t_transpose/r_odd_even/s_buffer_level/stats.txt");
+			   
+			if (f_time == `warmup_packets_num*20-1) begin
+	
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
+				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
+				$fdisplay(file_id,"",);
+				
+				$fdisplay(file_id," -- All packets:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Normal packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Ant packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
+				$fdisplay(file_id,"");
+			
+				$fclose(file_id);
+			end
+			end
+			
+   /*************************************************************************************************************************************
+
+	*************************************************************************************************************************************/
+
+			if(PACKET_RATE == 10 && traffic_type == 2 && routing_type == 2 && selection_type == 3)begin
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_10/t_transpose/r_odd_even/s_aco/stats.txt");
+			   
+			if (f_time == `warmup_packets_num*20-1) begin
+	
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
+				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
+				$fdisplay(file_id,"",);
+				
+				$fdisplay(file_id," -- All packets:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Normal packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Ant packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
+				$fdisplay(file_id,"");
+			
+				$fclose(file_id);
+			end
+			end
+			
+   /*************************************************************************************************************************************
+
+	*************************************************************************************************************************************/
+			if(PACKET_RATE == 10 && traffic_type == 3 && routing_type == 1 && selection_type == 1)begin
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_10/t_hotspot/r_xy/s_random/stats.txt");
+			   
+			if (f_time == `warmup_packets_num*20-1) begin
+	
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
+				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
+				$fdisplay(file_id,"",);
+				
+				$fdisplay(file_id," -- All packets:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Normal packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Ant packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
+				$fdisplay(file_id,"");
+			
+				$fclose(file_id);
+			end
+			end
+			
+   /*************************************************************************************************************************************
+
+	*************************************************************************************************************************************/
+
+			if(PACKET_RATE == 10 && traffic_type == 3 && routing_type == 2 && selection_type == 1)begin
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_10/t_hotspot/r_odd_even/s_random/stats.txt");
+			   
+			if (f_time == `warmup_packets_num*20-1) begin
+	
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
+				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
+				$fdisplay(file_id,"",);
+				
+				$fdisplay(file_id," -- All packets:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Normal packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Ant packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
+				$fdisplay(file_id,"");
+			
+				$fclose(file_id);
+			end
+			end
+			
+   /*************************************************************************************************************************************
+
+	*************************************************************************************************************************************/
+
+			if(PACKET_RATE == 10 && traffic_type == 3 && routing_type == 2 && selection_type == 2)begin
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_10/t_hotspot/r_odd_even/s_buffer_level/stats.txt");
+			   
+			if (f_time == `warmup_packets_num*20-1) begin
+	
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
+				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
+				$fdisplay(file_id,"",);
+				
+				$fdisplay(file_id," -- All packets:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Normal packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Ant packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
+				$fdisplay(file_id,"");
+			
+				$fclose(file_id);
+			end
+			end
+			
+   /*************************************************************************************************************************************
+
+	*************************************************************************************************************************************/
+
+			if(PACKET_RATE == 10 && traffic_type == 3 && routing_type == 2 && selection_type == 3)begin
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_10/t_hotspot/r_odd_even/s_aco/stats.txt");
+			   
+			if (f_time == `warmup_packets_num*20-1) begin
+	
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
+				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
+				$fdisplay(file_id,"",);
+				
+				$fdisplay(file_id," -- All packets:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Normal packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Ant packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
+				$fdisplay(file_id,"");
+			
+				$fclose(file_id);
+			end
+			end
+			
+			
+			
+			
+			
+			
+			
+			
+			
+			
+			
+   /*************************************************************************************************************************************
+
+	*************************************************************************************************************************************/
+			if(PACKET_RATE == 20 && traffic_type == 1 && routing_type == 1 && selection_type == 1)begin
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_20/t_uniform/r_xy/s_random/stats.txt");
+			   
+			if (f_time == `warmup_packets_num*20-1) begin
+	
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
+				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
+				$fdisplay(file_id,"",);
+				
+				$fdisplay(file_id," -- All packets:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Normal packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Ant packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
+				$fdisplay(file_id,"");
+			
+				$fclose(file_id);
+			end
+			end
+			
+   /*************************************************************************************************************************************
+
+	*************************************************************************************************************************************/
+
+			if(PACKET_RATE == 20 && traffic_type == 1 && routing_type == 2 && selection_type == 1)begin
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_20/t_uniform/r_odd_even/s_random/stats.txt");
+			   
+			if (f_time == `warmup_packets_num*20-1) begin
+	
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
+				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
+				$fdisplay(file_id,"",);
+				
+				$fdisplay(file_id," -- All packets:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Normal packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Ant packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
+				$fdisplay(file_id,"");
+			
+				$fclose(file_id);
+			end
+			end
+			
+   /*************************************************************************************************************************************
+
+	*************************************************************************************************************************************/
+
+			if(PACKET_RATE == 20 && traffic_type == 1 && routing_type == 2 && selection_type == 2)begin
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_20/t_uniform/r_odd_even/s_buffer_level/stats.txt");
+			   
+			if (f_time == `warmup_packets_num*20-1) begin
+	
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
+				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
+				$fdisplay(file_id,"",);
+				
+				$fdisplay(file_id," -- All packets:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Normal packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Ant packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
+				$fdisplay(file_id,"");
+			
+				$fclose(file_id);
+			end
+			end
+			
+   /*************************************************************************************************************************************
+
+	*************************************************************************************************************************************/
+
+			if(PACKET_RATE == 20 && traffic_type == 1 && routing_type == 2 && selection_type == 3)begin
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_20/t_uniform/r_odd_even/s_aco/stats.txt");
+			   
+			if (f_time == `warmup_packets_num*20-1) begin
+	
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
+				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
+				$fdisplay(file_id,"",);
+				
+				$fdisplay(file_id," -- All packets:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Normal packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Ant packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
+				$fdisplay(file_id,"");
+			
+				$fclose(file_id);
+			end
+			end
+
+   /*************************************************************************************************************************************
+
+	*************************************************************************************************************************************/
+			if(PACKET_RATE == 20 && traffic_type == 2 && routing_type == 1 && selection_type == 1)begin
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_20/t_transpose/r_xy/s_random/stats.txt");
+			   
+			if (f_time == `warmup_packets_num*20-1) begin
+	
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
+				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
+				$fdisplay(file_id,"",);
+				
+				$fdisplay(file_id," -- All packets:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Normal packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Ant packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
+				$fdisplay(file_id,"");
+			
+				$fclose(file_id);
+			end
+			end
+			
+   /*************************************************************************************************************************************
+
+	*************************************************************************************************************************************/
+
+			if(PACKET_RATE == 20 && traffic_type == 2 && routing_type == 2 && selection_type == 1)begin
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_20/t_transpose/r_odd_even/s_random/stats.txt");
+			   
+			if (f_time == `warmup_packets_num*20-1) begin
+	
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
+				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
+				$fdisplay(file_id,"",);
+				
+				$fdisplay(file_id," -- All packets:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Normal packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Ant packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
+				$fdisplay(file_id,"");
+			
+				$fclose(file_id);
+			end
+			end
+			
+   /*************************************************************************************************************************************
+
+	*************************************************************************************************************************************/
+
+			if(PACKET_RATE == 20 && traffic_type == 2 && routing_type == 2 && selection_type == 2)begin
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_20/t_transpose/r_odd_even/s_buffer_level/stats.txt");
+			   
+			if (f_time == `warmup_packets_num*20-1) begin
+	
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
+				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
+				$fdisplay(file_id,"",);
+				
+				$fdisplay(file_id," -- All packets:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Normal packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Ant packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
+				$fdisplay(file_id,"");
+			
+				$fclose(file_id);
+			end
+			end
+			
+   /*************************************************************************************************************************************
+
+	*************************************************************************************************************************************/
+
+			if(PACKET_RATE == 20 && traffic_type == 2 && routing_type == 2 && selection_type == 3)begin
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_20/t_transpose/r_odd_even/s_aco/stats.txt");
+			   
+			if (f_time == `warmup_packets_num*20-1) begin
+	
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
+				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
+				$fdisplay(file_id,"",);
+				
+				$fdisplay(file_id," -- All packets:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Normal packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Ant packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
+				$fdisplay(file_id,"");
+			
+				$fclose(file_id);
+			end
+			end
+			
+   /*************************************************************************************************************************************
+
+	*************************************************************************************************************************************/
+			if(PACKET_RATE == 20 && traffic_type == 3 && routing_type == 1 && selection_type == 1)begin
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_20/t_hotspot/r_xy/s_random/stats.txt");
+			   
+			if (f_time == `warmup_packets_num*20-1) begin
+	
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
+				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
+				$fdisplay(file_id,"",);
+				
+				$fdisplay(file_id," -- All packets:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Normal packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Ant packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
+				$fdisplay(file_id,"");
+			
+				$fclose(file_id);
+			end
+			end
+			
+   /*************************************************************************************************************************************
+
+	*************************************************************************************************************************************/
+
+			if(PACKET_RATE == 20 && traffic_type == 3 && routing_type == 2 && selection_type == 1)begin
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_20/t_hotspot/r_odd_even/s_random/stats.txt");
+			   
+			if (f_time == `warmup_packets_num*20-1) begin
+	
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
+				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
+				$fdisplay(file_id,"",);
+				
+				$fdisplay(file_id," -- All packets:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Normal packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Ant packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
+				$fdisplay(file_id,"");
+			
+				$fclose(file_id);
+			end
+			end
+			
+   /*************************************************************************************************************************************
+
+	*************************************************************************************************************************************/
+
+			if(PACKET_RATE == 20 && traffic_type == 3 && routing_type == 2 && selection_type == 2)begin
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_20/t_hotspot/r_odd_even/s_buffer_level/stats.txt");
+			   
+			if (f_time == `warmup_packets_num*20-1) begin
+	
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
+				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
+				$fdisplay(file_id,"",);
+				
+				$fdisplay(file_id," -- All packets:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Normal packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Ant packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
+				$fdisplay(file_id,"");
+			
+				$fclose(file_id);
+			end
+			end
+			
+   /*************************************************************************************************************************************
+
+	*************************************************************************************************************************************/
+
+			if(PACKET_RATE == 20 && traffic_type == 3 && routing_type == 2 && selection_type == 3)begin
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_20/t_hotspot/r_odd_even/s_aco/stats.txt");
+			   
+			if (f_time == `warmup_packets_num*20-1) begin
+	
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
+				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
+				$fdisplay(file_id,"",);
+				
+				$fdisplay(file_id," -- All packets:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Normal packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Ant packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
+				$fdisplay(file_id,"");
+			
+				$fclose(file_id);
+			end
+			end
+			
+			
+			
+			
+			
+			
+			
+			
+			
+			
+   /*************************************************************************************************************************************
+
+	*************************************************************************************************************************************/
+			if(PACKET_RATE == 50 && traffic_type == 1 && routing_type == 1 && selection_type == 1)begin
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_50/t_uniform/r_xy/s_random/stats.txt");
+			   
+			if (f_time == `warmup_packets_num*20-1) begin
+	
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
+				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
+				$fdisplay(file_id,"",);
+				
+				$fdisplay(file_id," -- All packets:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Normal packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Ant packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
+				$fdisplay(file_id,"");
+			
+				$fclose(file_id);
+			end
+			end
+			
+   /*************************************************************************************************************************************
+
+	*************************************************************************************************************************************/
+
+			if(PACKET_RATE == 50 && traffic_type == 1 && routing_type == 2 && selection_type == 1)begin
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_50/t_uniform/r_odd_even/s_random/stats.txt");
+			   
+			if (f_time == `warmup_packets_num*20-1) begin
+	
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
+				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
+				$fdisplay(file_id,"",);
+				
+				$fdisplay(file_id," -- All packets:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Normal packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Ant packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
+				$fdisplay(file_id,"");
+			
+				$fclose(file_id);
+			end
+			end
+			
+   /*************************************************************************************************************************************
+
+	*************************************************************************************************************************************/
+
+			if(PACKET_RATE == 50 && traffic_type == 1 && routing_type == 2 && selection_type == 2)begin
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_50/t_uniform/r_odd_even/s_buffer_level/stats.txt");
+			   
+			if (f_time == `warmup_packets_num*20-1) begin
+	
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
+				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
+				$fdisplay(file_id,"",);
+				
+				$fdisplay(file_id," -- All packets:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Normal packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Ant packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
+				$fdisplay(file_id,"");
+			
+				$fclose(file_id);
+			end
+			end
+			
+   /*************************************************************************************************************************************
+
+	*************************************************************************************************************************************/
+
+			if(PACKET_RATE == 50 && traffic_type == 1 && routing_type == 2 && selection_type == 3)begin
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_50/t_uniform/r_odd_even/s_aco/stats.txt");
+			   
+			if (f_time == `warmup_packets_num*20-1) begin
+	
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
+				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
+				$fdisplay(file_id,"",);
+				
+				$fdisplay(file_id," -- All packets:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Normal packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Ant packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
+				$fdisplay(file_id,"");
+			
+				$fclose(file_id);
+			end
+			end
+
+   /*************************************************************************************************************************************
+
+	*************************************************************************************************************************************/
+			if(PACKET_RATE == 50 && traffic_type == 2 && routing_type == 1 && selection_type == 1)begin
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_50/t_transpose/r_xy/s_random/stats.txt");
+			   
+			if (f_time == `warmup_packets_num*20-1) begin
+	
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
+				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
+				$fdisplay(file_id,"",);
+				
+				$fdisplay(file_id," -- All packets:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Normal packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Ant packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
+				$fdisplay(file_id,"");
+			
+				$fclose(file_id);
+			end
+			end
+			
+   /*************************************************************************************************************************************
+
+	*************************************************************************************************************************************/
+
+			if(PACKET_RATE == 50 && traffic_type == 2 && routing_type == 2 && selection_type == 1)begin
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_50/t_transpose/r_odd_even/s_random/stats.txt");
+			   
+			if (f_time == `warmup_packets_num*20-1) begin
+	
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
+				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
+				$fdisplay(file_id,"",);
+				
+				$fdisplay(file_id," -- All packets:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Normal packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Ant packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
+				$fdisplay(file_id,"");
+			
+				$fclose(file_id);
+			end
+			end
+			
+   /*************************************************************************************************************************************
+
+	*************************************************************************************************************************************/
+
+			if(PACKET_RATE == 50 && traffic_type == 2 && routing_type == 2 && selection_type == 2)begin
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_50/t_transpose/r_odd_even/s_buffer_level/stats.txt");
+			   
+			if (f_time == `warmup_packets_num*20-1) begin
+	
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
+				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
+				$fdisplay(file_id,"",);
+				
+				$fdisplay(file_id," -- All packets:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Normal packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Ant packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
+				$fdisplay(file_id,"");
+			
+				$fclose(file_id);
+			end
+			end
+			
+   /*************************************************************************************************************************************
+
+	*************************************************************************************************************************************/
+
+			if(PACKET_RATE == 50 && traffic_type == 2 && routing_type == 2 && selection_type == 3)begin
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_50/t_transpose/r_odd_even/s_aco/stats.txt");
+			   
+			if (f_time == `warmup_packets_num*20-1) begin
+	
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
+				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
+				$fdisplay(file_id,"",);
+				
+				$fdisplay(file_id," -- All packets:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Normal packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Ant packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
+				$fdisplay(file_id,"");
+			
+				$fclose(file_id);
+			end
+			end
+			
+   /*************************************************************************************************************************************
+
+	*************************************************************************************************************************************/
+			if(PACKET_RATE == 50 && traffic_type == 3 && routing_type == 1 && selection_type == 1)begin
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_50/t_hotspot/r_xy/s_random/stats.txt");
+			   
+			if (f_time == `warmup_packets_num*20-1) begin
+	
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
+				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
+				$fdisplay(file_id,"",);
+				
+				$fdisplay(file_id," -- All packets:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Normal packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Ant packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
+				$fdisplay(file_id,"");
+			
+				$fclose(file_id);
+			end
+			end
+			
+   /*************************************************************************************************************************************
+
+	*************************************************************************************************************************************/
+
+			if(PACKET_RATE == 50 && traffic_type == 3 && routing_type == 2 && selection_type == 1)begin
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_50/t_hotspot/r_odd_even/s_random/stats.txt");
+			   
+			if (f_time == `warmup_packets_num*20-1) begin
+	
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
+				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
+				$fdisplay(file_id,"",);
+				
+				$fdisplay(file_id," -- All packets:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Normal packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Ant packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
+				$fdisplay(file_id,"");
+			
+				$fclose(file_id);
+			end
+			end
+			
+   /*************************************************************************************************************************************
+
+	*************************************************************************************************************************************/
+
+			if(PACKET_RATE == 50 && traffic_type == 3 && routing_type == 2 && selection_type == 2)begin
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_50/t_hotspot/r_odd_even/s_buffer_level/stats.txt");
+			   
+			if (f_time == `warmup_packets_num*20-1) begin
+	
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
+				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
+				$fdisplay(file_id,"",);
+				
+				$fdisplay(file_id," -- All packets:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Normal packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Ant packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
+				$fdisplay(file_id,"");
+			
+				$fclose(file_id);
+			end
+			end
+			
+   /*************************************************************************************************************************************
+
+	*************************************************************************************************************************************/
+
+			if(PACKET_RATE == 50 && traffic_type == 3 && routing_type == 2 && selection_type == 3)begin
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_50/t_hotspot/r_odd_even/s_aco/stats.txt");
+			   
+			if (f_time == `warmup_packets_num*20-1) begin
+	
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
+				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
+				$fdisplay(file_id,"",);
+				
+				$fdisplay(file_id," -- All packets:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Normal packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
+				$fdisplay(file_id,"");
+				$fdisplay(file_id," -- Ant packet:");
+				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
+														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
+				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
+				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
+				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
+				$fdisplay(file_id,"");
+			
+				$fclose(file_id);
+			end
 			end
       end
    end
 endmodule
-/*FYI.
+/*
+{ //config
+    "aco_packet_injection_rate": 10,
+    "enable_debugging": false,
+    "link_delay": 1,
+    "link_width": 4,
+    "max_cycles": 1000,
+    "max_injection_buffer_size": 32,
+    "max_input_buffer_size": 20,
+    "max_packets": -1,
+    "no_drain": true,
+    "num_nodes": 64,
+    "num_virtual_channels": 4,
+    "packet_injection_rate": 10,
+    "packet_size": 16,
+    "rand_seed": 13,
+    "reinforcement_factor": 0.05,
+    "result_dir": "results/j_10/t_hotspot/r_odd_even/s_aco/",
+    "routing": "odd_even",
+    "selection": "aco",
+    "traffic": "hotspot"
+}
+{ //stats
+    "acopacket.average_packet_delay": 221.22202359671076,
+    "acopacket.max_packet_delay": 905,
+    "acopacket.num_packets_received": 3920,
+    "acopacket.num_packets_transmitted": 1567,
+    "acopacket.throughput": 0.024484375,
+    "average_packet_delay": 395.35395066142297,
+    "max_packet_delay": 940,
+    "num_packets_received": 6760,
+    "num_packets_transmitted": 2797,
+    "packet.average_packet_delay": 174.1319270647122,
+    "packet.max_packet_delay": 940,
+    "packet.num_packets_received": 2840,
+    "packet.num_packets_transmitted": 1230,
+    "packet.throughput": 0.01921875,
+    "simulation_time": 73.83912818200042,
+    "throughput": 0.043703125,
+    "total_cycles": 1000
+}
 [2016-04-26 10:45:11] INFO - Overall:
 [2016-04-26 10:45:11] INFO -     # Total cycles: 435
 [2016-04-26 10:45:11] INFO -

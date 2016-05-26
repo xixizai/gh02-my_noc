@@ -73,7 +73,6 @@ set_global_assignment -name EDA_TEST_BENCH_NAME tb_network_xy -section_id eda_si
 set_global_assignment -name EDA_DESIGN_INSTANCE_NAME NA -section_id tb_network_xy
 set_global_assignment -name EDA_TEST_BENCH_RUN_SIM_FOR "100 us" -section_id tb_network_xy
 set_global_assignment -name EDA_TEST_BENCH_MODULE_NAME tb_network_xy -section_id tb_network_xy
-set_global_assignment -name SYSTEMVERILOG_FILE src/selection_random.sv
 set_global_assignment -name SYSTEMVERILOG_FILE src/tb_network_xy.sv
 set_global_assignment -name SYSTEMVERILOG_FILE src/tb_network_debug.sv
 set_global_assignment -name SYSTEMVERILOG_FILE src/tb_network.sv
@@ -82,6 +81,8 @@ set_global_assignment -name SYSTEMVERILOG_FILE src/switch_onehot_packet.sv
 set_global_assignment -name SYSTEMVERILOG_FILE src/ppe_roundrobin.sv
 set_global_assignment -name SYSTEMVERILOG_FILE src/switch_control.sv
 set_global_assignment -name SYSTEMVERILOG_FILE src/selection_aco.sv
+set_global_assignment -name SYSTEMVERILOG_FILE src/selection_obl.sv
+set_global_assignment -name SYSTEMVERILOG_FILE src/selection_random.sv
 set_global_assignment -name SYSTEMVERILOG_FILE src/routing_odd_even.sv
 set_global_assignment -name SYSTEMVERILOG_FILE src/routing_xy.sv
 set_global_assignment -name SYSTEMVERILOG_FILE src/ant_agent.sv
