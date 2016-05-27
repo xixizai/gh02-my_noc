@@ -6,19 +6,20 @@ module tb_network
 #(
    parameter CLK_PERIOD = 100ps, // 设置一个时钟周期为 100ps
    parameter integer WARMUP_PACKETS = `warmup_packets_num, // 使用WARMUP_PACKETS数量的包来 warm-up the network
-   parameter integer MEASURE_PACKETS = `warmup_packets_num*5, // 用来测试的包的数量
+   parameter integer MEASURE_PACKETS = `warmup_packets_num*10, // 用来测试的包的数量
    parameter integer DRAIN_PACKETS = `warmup_packets_num*3, // 使用DRAIN_PACKETS数量的包来 drain the network
-	parameter longint FINISH_TIME = CLK_PERIOD * `warmup_packets_num*20,
+	parameter longint FINISH_TIME = CLK_PERIOD * `warmup_packets_num*10,
    
-   parameter integer PACKET_RATE = 5, // 平均包注入率 Offered traffic as percent of capacity
-   parameter integer HOTSPOT_PACKET_RATE = 30, // hotspot包注入率
+   parameter integer PACKET_RATE = 20, // 平均包注入率 Offered traffic as percent of capacity
+   parameter integer ANT_PACKET_RATE = PACKET_RATE, // 平均包注入率 Offered traffic as percent of capacity
+   parameter integer HOTSPOT_PACKET_RATE = 50, // hotspot包注入率
    
    parameter integer NODE_QUEUE_DEPTH = `INPUT_QUEUE_DEPTH * 5, // 模拟PE结点中 fifo 的深度
-	parameter integer traffic_type = 2, //0:nothing   1:uniform   2:transpose   3:hotspot
-   parameter integer routing_type = 2, //0:nothing   1:xy   2:odd even
-   parameter integer selection_type = 3 //0:选择第一个   1:random   2:obl   3:aco
+	parameter integer traffic_type = 1, //0:nothing   1:uniform   2:transpose   3:hotspot
+   parameter integer routing_type = 1, //0:nothing   1:xy   2:odd even
+   parameter integer selection_type = 1 //0:选择第一个   1:random   2:obl   3:aco
 );
-
+ 
    // =================================================== 变量 ==============================================================
 	integer file_id;
   
@@ -31,7 +32,7 @@ module tb_network
    logic    [7:0] packet_count;  // 对仿真生成的包进行计数，可用来标记每个包的id
 	
    // =================================================== 测试变量 ==============================================================
-
+ 
    //记录 总的 Tx 和 Rx --------------------------------------------------------------------------------------------------
    longint f_port_i_data_count_all [0:`NODES-1];        // 计数，各个PE结点发往network的 包的数量
       longint f_port_i_data_count_normal [0:`NODES-1];  // 计数，各个PE结点发往network的 普通包的数量
@@ -82,6 +83,7 @@ module tb_network
       real f_throughput_o_ant;       // 吞吐率，ant包
       real f_throughput_o_forward;   // 吞吐率，forward ant包
       real f_throughput_o_backward;  // 吞吐率，backward ant包
+   real f_throughput_cycle_count;        // 接收到的measure包的数量
 
    // 只记录measure包的时延 --------------------------------------------------------------------------------------------------
    real f_latency_o_packet_count_all;        // 接收到的measure包的数量
@@ -110,6 +112,7 @@ module tb_network
    // ================================================ 值为随机生成的变量 ==========================================================
 	
    logic [0:`NODES-1] rand_data_val; // 根据包注入率随机生成0或1，如果等于1则赋予数据包有效
+   logic [0:`NODES-1] rand_ant_data_val; // 根据包注入率随机生成0或1，如果等于1则赋予数据包有效
    logic [0:`NODES-1][$clog2(`X_NODES)-1:0] rand_x_dest; // 随机生成数据包的x坐标
    logic [0:`NODES-1][$clog2(`Y_NODES)-1:0] rand_y_dest; // 随机生成数据包的y坐标
    logic [$clog2(`NODES)-1:0] rand_hotspots_num;
@@ -265,19 +268,23 @@ module tb_network
       if(~reset_n) begin
          for(int i=0; i<`NODES; i++) begin
             rand_data_val[i] <= 0;
+            rand_ant_data_val[i] <= 0;
          end
       end else begin
          if(traffic_type==1)begin // uniform
             for(int i=0; i<`NODES; i++) begin
                rand_data_val[i] <= ($urandom_range(100,1) <= PACKET_RATE) ? 1'b1 : 1'b0;
+               rand_ant_data_val[i] <= ($urandom_range(100,1) <= ANT_PACKET_RATE) ? 1'b1 : 1'b0;
             end
 		   end else if(traffic_type==2)begin// transpose 还没改
 				for(int i=0; i<`NODES; i++) begin
 					rand_data_val[i] <= ($urandom_range(100,1) <= PACKET_RATE) ? 1'b1 : 1'b0;
+               rand_ant_data_val[i] <= ($urandom_range(100,1) <= ANT_PACKET_RATE) ? 1'b1 : 1'b0;
 				end
 			end else begin // hotspot
 			// 随机hotspot生成 在下面initial部分
 				for(int i=0; i<`NODES; i++) begin
+               rand_ant_data_val[i] <= ($urandom_range(100,1) <= ANT_PACKET_RATE) ? 1'b1 : 1'b0;
 					if(i==rand_hotspots[0] || i==rand_hotspots[1] || i==rand_hotspots[2] || i==rand_hotspots[3])begin
 						// n个热点必须一一写出。。没想出其它办法。。
 						rand_data_val[i] <= ($urandom_range(100,1) <= HOTSPOT_PACKET_RATE) ? 1'b1 : 1'b0;
@@ -336,7 +343,7 @@ module tb_network
 					if(selection_type==3)begin
 					   // normal+ant packet
 						if(f_time % `CREATE_ANT_PERIOD == 0)begin
-							i_data_val_FF[i] <= ( |o_en_FF[i]);
+							i_data_val_FF[i] <= rand_ant_data_val[i] && ( |o_en_FF[i]);
 							i_data_FF[i].ant <= 1;
 						end else begin
 							i_data_val_FF[i] <= rand_data_val[i] && ( |o_en_FF[i]);
@@ -455,7 +462,7 @@ module tb_network
       end
    end
 
-   // 测试: measure时期的 TX 和 RX  --------------------------------------------
+   // 测试: measure时期的 cycle 和 TX 和 RX  --------------------------------------------
    always_ff@(negedge clk) begin
       if(~reset_n) begin
          for(int i=0; i<`NODES; i++) begin
@@ -471,7 +478,12 @@ module tb_network
             f_measure_port_o_packet_count_forward[i]  <= 0;
             f_measure_port_o_packet_count_backward[i] <= 0;
          end
+		   f_throughput_cycle_count <= 0;
       end else begin
+         if(   (f_total_o_data_count_all >= WARMUP_PACKETS) 
+            && (f_total_o_data_count_all < (WARMUP_PACKETS + MEASURE_PACKETS)))begin
+		      f_throughput_cycle_count <= f_throughput_cycle_count+1;
+			end
          for(int i=0; i<`NODES; i++) begin
             if(l_data_val_FFtoN[i] && i_en_FF[i]
 				                       && (f_total_i_data_count_all >= WARMUP_PACKETS) 
@@ -554,11 +566,11 @@ module tb_network
       f_throughput_o_backward = 0;
 
       if(`warmup_packets_num != 0) begin
-         f_throughput_o_all      = (f_measure_total_o_packet_count_all     / (`warmup_packets_num * `NODES));
-         f_throughput_o_normal   = (f_measure_total_o_packet_count_normal  / (`warmup_packets_num * `NODES));
-         f_throughput_o_ant      = (f_measure_total_o_packet_count_ant     / (`warmup_packets_num * `NODES));
-         f_throughput_o_forward  = (f_measure_total_o_packet_count_forward / (`warmup_packets_num * `NODES));
-         f_throughput_o_backward = (f_measure_total_o_packet_count_backward/ (`warmup_packets_num * `NODES));
+         f_throughput_o_all      = (f_measure_total_o_packet_count_all     / (f_throughput_cycle_count * `NODES));
+         f_throughput_o_normal   = (f_measure_total_o_packet_count_normal  / (f_throughput_cycle_count * `NODES));
+         f_throughput_o_ant      = (f_measure_total_o_packet_count_ant     / (f_throughput_cycle_count * `NODES));
+         f_throughput_o_forward  = (f_measure_total_o_packet_count_forward / (f_throughput_cycle_count * `NODES));
+         f_throughput_o_backward = (f_measure_total_o_packet_count_backward/ (f_throughput_cycle_count * `NODES));
       end
    end
 
@@ -733,7 +745,7 @@ module tb_network
 	
    // Simulation:  Run Period -------------------------------------
    initial begin
-	   #(CLK_PERIOD * `warmup_packets_num*20) $finish;
+	   #(CLK_PERIOD * `warmup_packets_num*10) $finish;
    end
 			
 /************************************************************************************************************************************************
@@ -761,7 +773,7 @@ module tb_network
          end
 			
          //show total packets message in the end
-         if (f_time == `warmup_packets_num*20-1) begin
+         if (f_time == `warmup_packets_num*10-1) begin
             $display("");
             $display(" # Total cycles: %g",f_time_finish-f_time_begin);
             $display(" # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
@@ -793,7 +805,7 @@ module tb_network
 			
    /*************************************************************************************************************************************
 
-                                                      写到 XY_routing/uniform/stats.txt 文件
+                                                      写到 XY_routing/uniform/stats.json 文件
 	
 { //config
     "aco_packet_injection_rate": 10,
@@ -836,28 +848,25 @@ module tb_network
     "total_cycles": 1000
 }
 { //config
-    "aco_packet_injection_rate":100,
-    //"enable_debugging": false,
-    //"link_delay": 1,
-    //"link_width": 4,
-    "max_cycles":`warmup_packets_num*20,
-    //"max_injection_buffer_size": 32,
-    //"max_input_buffer_size": 20,
-    //"max_packets": -1,
-    //"no_drain": true,
-    //"num_nodes": 64,
-    //"num_virtual_channels": 4,
+    "num_nodes":`NODES,
     "packet_injection_rate":PACKET_RATE,
-    //"packet_size": 16,
-    //"rand_seed": 13,
-    //"reinforcement_factor": 0.05,
-    //"result_dir": "results/j_10/t_hotspot/r_odd_even/s_aco/",
-    "routing": "odd_even",
-    "selection": "aco",
-    "traffic": "hotspot"
+    "aco_packet_injection_rate":ANT_PACKET_RATE,
+	 "warmup_packets":`WARMUP_PACKETS,
+	 "measure_packets":MEASURE_PACKETS,
+    "drain_packets":DRAIN_PACKETS,
+    "router_input_queue_depth":`INPUT_QUEUE_DEPTH,
+	 "PEnode_input_queue_depth":NODE_QUEUE_DEPTH,
+    "create_ant_packet_period":`CREATE_ANT_PERIOD,
+    "pheromone_table_value_width":`PH_TABLE_DEPTH,
+    "result_dir":"results/j_10/t_hotspot/r_odd_even/s_aco/",
+    "routing":"odd_even",
+    "selection":"aco",
+    "traffic":"hotspot",
+	 "hotspot_packet_injection_rate":HOTSPOT_PACKET_RATE
 }
 { //stats
-    "total_cycles":`warmup_packets_num*20,
+    "max_cycles":`warmup_packets_num*10,
+    "total_cycles":f_time_finish-f_time_begin,
     "measure_cycles":MEASURE_PACKETS,
     "throughput":f_throughput_o_all,
     "num_packets_transmitted":f_measure_total_i_packet_count_all,
@@ -873,11 +882,11 @@ module tb_network
     "acopacket.num_packets_transmitted":f_measure_total_i_packet_count_ant,
     "acopacket.num_packets_received":f_measure_total_o_packet_count_ant,
     "acopacket.average_packet_delay":f_average_latency_ant,
-    "acopacket.max_packet_delay":f_max_latency_ant,
+    "acopacket.max_packet_delay":f_max_latency_ant
 }				
 	function void wr_file(file_id,f_time,f_time_begin,f_total_i_data_count_all,f_total_o_data_count_all,f_measure_total_i_packet_count_all,f_measure_total_o_packet_count_all,f_throughput_o_all,f_average_latency_all,f_max_latency_all,f_measure_total_i_packet_count_normal,f_measure_total_o_packet_count_normal,f_throughput_o_normal,f_average_latency_normal,f_max_latency_normal,f_measure_total_i_packet_count_ant,f_measure_total_o_packet_count_ant,f_throughput_o_ant,f_average_latency_ant,f_max_latency_ant);
 		
-			if (f_time == `warmup_packets_num*20-1) begin
+			if (f_time == `warmup_packets_num*10-1) begin
 	
 				$fdisplay(file_id,"");
 				$fdisplay(file_id,"Total cycles,%g,f_time_finish-f_time_begin);
@@ -916,39 +925,55 @@ module tb_network
 
 	*************************************************************************************************************************************/
 			if(PACKET_RATE == 1 && traffic_type == 1 && routing_type == 1 && selection_type == 1)begin
-            file_id = $fopen(
-"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_1/t_uniform/r_xy/s_random/stats.txt");
 				/*wr_file(file_id,f_time,f_time_begin,f_total_i_data_count_all,f_total_o_data_count_all,f_measure_total_i_packet_count_all,f_measure_total_o_packet_count_all,f_throughput_o_all,f_average_latency_all,f_max_latency_all,f_measure_total_i_packet_count_normal,f_measure_total_o_packet_count_normal,f_throughput_o_normal,f_average_latency_normal,f_max_latency_normal,f_measure_total_i_packet_count_ant,f_measure_total_o_packet_count_ant,f_throughput_o_ant,f_average_latency_ant,f_max_latency_ant);*/
 				
-			if (f_time == `warmup_packets_num*20-1) begin
-	
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
-				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
-				$fdisplay(file_id,"",);
+			if (f_time == `warmup_packets_num*10-1) begin
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_1/t_uniform/r_xy/s_random/stats.json");
+	         $fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+	         $fdisplay(file_id,"   \"throughput\":%g,",f_throughput_o_all);
+	         $fdisplay(file_id,"   \"num_packets_transmitted\":%g,",f_measure_total_i_packet_count_all);
+	         $fdisplay(file_id,"   \"num_packets_received\":%g,",f_measure_total_o_packet_count_all);
+	         $fdisplay(file_id,"   \"average_packet_delay\":%g,",f_average_latency_all);
+	         $fdisplay(file_id,"   \"max_packet_delay\":%g,",f_max_latency_all);
+	         $fdisplay(file_id,"   \"packet.throughput\":%g,",f_throughput_o_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_received\":%g,",f_measure_total_o_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.average_packet_delay\":%g,",f_average_latency_normal);
+	         $fdisplay(file_id,"   \"packet.max_packet_delay\":%g,",f_max_latency_normal);
+	         $fdisplay(file_id,"   \"acopacket.throughput\":%g,",f_throughput_o_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_received\":%g,",f_measure_total_o_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.average_packet_delay\":%g,",f_average_latency_ant);
+	         $fdisplay(file_id,"   \"acopacket.max_packet_delay\":%g",f_max_latency_ant);
+	         $fdisplay(file_id,"}");
+				$fclose(file_id);
 				
-				$fdisplay(file_id," -- All packets:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Normal packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Ant packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
-				$fdisplay(file_id,"");
-			
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_1/t_uniform/r_xy/s_random/config.json");
+            $fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"num_nodes\":%g,",`NODES);
+				$fdisplay(file_id,"   \"warmup_packets\":%g,",WARMUP_PACKETS);
+				$fdisplay(file_id,"   \"measure_packets\":%g,",MEASURE_PACKETS);
+				$fdisplay(file_id,"   \"drain_packets\":%g,",DRAIN_PACKETS);
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+				$fdisplay(file_id,"   \"router_input_queue_depth\":%g,",`INPUT_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"PEnode_input_queue_depth\":%g,",NODE_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"create_ant_packet_period\":%g,",`CREATE_ANT_PERIOD);
+				$fdisplay(file_id,"   \"pheromone_table_value_width\":%g,",`PH_TABLE_DEPTH);
+				$fdisplay(file_id,"   \"result_dir\":\"results/j_10/t_hotspot/r_odd_even/s_aco/\",");
+				$fdisplay(file_id,"   \"routing\":\"odd_even\",");
+				$fdisplay(file_id,"   \"selection\":\"aco\",");
+				$fdisplay(file_id,"   \"traffic\":\"hotspot\",");
+				$fdisplay(file_id,"   \"packet_injection_rate\":%g,",PACKET_RATE);
+				$fdisplay(file_id,"   \"aco_packet_injection_rate\":%g,",ANT_PACKET_RATE);
+				$fdisplay(file_id,"   \"hotspot_packet_injection_rate\":%g",HOTSPOT_PACKET_RATE);
+	         $fdisplay(file_id,"}");
 				$fclose(file_id);
 			end
 			end
@@ -958,38 +983,54 @@ module tb_network
 	*************************************************************************************************************************************/
 
 			if(PACKET_RATE == 1 && traffic_type == 1 && routing_type == 2 && selection_type == 1)begin
-            file_id = $fopen(
-"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_1/t_uniform/r_odd_even/s_random/stats.txt");
 
-			if (f_time == `warmup_packets_num*20-1) begin
+			if (f_time == `warmup_packets_num*10-1) begin
 	
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
-				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
-				$fdisplay(file_id,"",);
-				
-				$fdisplay(file_id," -- All packets:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Normal packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Ant packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
-				$fdisplay(file_id,"");
-			
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_1/t_uniform/r_odd_even/s_random/stats.json");
+				$fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+	         $fdisplay(file_id,"   \"throughput\":%g,",f_throughput_o_all);
+	         $fdisplay(file_id,"   \"num_packets_transmitted\":%g,",f_measure_total_i_packet_count_all);
+	         $fdisplay(file_id,"   \"num_packets_received\":%g,",f_measure_total_o_packet_count_all);
+	         $fdisplay(file_id,"   \"average_packet_delay\":%g,",f_average_latency_all);
+	         $fdisplay(file_id,"   \"max_packet_delay\":%g,",f_max_latency_all);
+	         $fdisplay(file_id,"   \"packet.throughput\":%g,",f_throughput_o_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_received\":%g,",f_measure_total_o_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.average_packet_delay\":%g,",f_average_latency_normal);
+	         $fdisplay(file_id,"   \"packet.max_packet_delay\":%g,",f_max_latency_normal);
+	         $fdisplay(file_id,"   \"acopacket.throughput\":%g,",f_throughput_o_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_received\":%g,",f_measure_total_o_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.average_packet_delay\":%g,",f_average_latency_ant);
+	         $fdisplay(file_id,"   \"acopacket.max_packet_delay\":%g",f_max_latency_ant);
+	         $fdisplay(file_id,"}");
+				$fclose(file_id);
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_1/t_uniform/r_odd_even/s_random/config.json");
+            $fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"num_nodes\":%g,",`NODES);
+				$fdisplay(file_id,"   \"warmup_packets\":%g,",WARMUP_PACKETS);
+				$fdisplay(file_id,"   \"measure_packets\":%g,",MEASURE_PACKETS);
+				$fdisplay(file_id,"   \"drain_packets\":%g,",DRAIN_PACKETS);
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+				$fdisplay(file_id,"   \"router_input_queue_depth\":%g,",`INPUT_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"PEnode_input_queue_depth\":%g,",NODE_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"create_ant_packet_period\":%g,",`CREATE_ANT_PERIOD);
+				$fdisplay(file_id,"   \"pheromone_table_value_width\":%g,",`PH_TABLE_DEPTH);
+				$fdisplay(file_id,"   \"result_dir\":\"results/j_10/t_hotspot/r_odd_even/s_aco/\",");
+				$fdisplay(file_id,"   \"routing\":\"odd_even\",");
+				$fdisplay(file_id,"   \"selection\":\"aco\",");
+				$fdisplay(file_id,"   \"traffic\":\"hotspot\",");
+				$fdisplay(file_id,"   \"packet_injection_rate\":%g,",PACKET_RATE);
+				$fdisplay(file_id,"   \"aco_packet_injection_rate\":%g,",ANT_PACKET_RATE);
+				$fdisplay(file_id,"   \"hotspot_packet_injection_rate\":%g",HOTSPOT_PACKET_RATE);
+	         $fdisplay(file_id,"}");
 				$fclose(file_id);
 			end
 			end
@@ -999,38 +1040,54 @@ module tb_network
 	*************************************************************************************************************************************/
 
 			if(PACKET_RATE == 1 && traffic_type == 1 && routing_type == 2 && selection_type == 2)begin
-            file_id = $fopen(
-"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_1/t_uniform/r_odd_even/s_buffer_level/stats.txt");
 			   
-			if (f_time == `warmup_packets_num*20-1) begin
+			if (f_time == `warmup_packets_num*10-1) begin
 	
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
-				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
-				$fdisplay(file_id,"",);
-				
-				$fdisplay(file_id," -- All packets:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Normal packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Ant packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
-				$fdisplay(file_id,"");
-			
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_1/t_uniform/r_odd_even/s_buffer_level/stats.json");
+				$fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+	         $fdisplay(file_id,"   \"throughput\":%g,",f_throughput_o_all);
+	         $fdisplay(file_id,"   \"num_packets_transmitted\":%g,",f_measure_total_i_packet_count_all);
+	         $fdisplay(file_id,"   \"num_packets_received\":%g,",f_measure_total_o_packet_count_all);
+	         $fdisplay(file_id,"   \"average_packet_delay\":%g,",f_average_latency_all);
+	         $fdisplay(file_id,"   \"max_packet_delay\":%g,",f_max_latency_all);
+	         $fdisplay(file_id,"   \"packet.throughput\":%g,",f_throughput_o_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_received\":%g,",f_measure_total_o_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.average_packet_delay\":%g,",f_average_latency_normal);
+	         $fdisplay(file_id,"   \"packet.max_packet_delay\":%g,",f_max_latency_normal);
+	         $fdisplay(file_id,"   \"acopacket.throughput\":%g,",f_throughput_o_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_received\":%g,",f_measure_total_o_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.average_packet_delay\":%g,",f_average_latency_ant);
+	         $fdisplay(file_id,"   \"acopacket.max_packet_delay\":%g",f_max_latency_ant);
+	         $fdisplay(file_id,"}");
+				$fclose(file_id);
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_1/t_uniform/r_odd_even/s_buffer_level/config.json");
+            $fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"num_nodes\":%g,",`NODES);
+				$fdisplay(file_id,"   \"warmup_packets\":%g,",WARMUP_PACKETS);
+				$fdisplay(file_id,"   \"measure_packets\":%g,",MEASURE_PACKETS);
+				$fdisplay(file_id,"   \"drain_packets\":%g,",DRAIN_PACKETS);
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+				$fdisplay(file_id,"   \"router_input_queue_depth\":%g,",`INPUT_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"PEnode_input_queue_depth\":%g,",NODE_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"create_ant_packet_period\":%g,",`CREATE_ANT_PERIOD);
+				$fdisplay(file_id,"   \"pheromone_table_value_width\":%g,",`PH_TABLE_DEPTH);
+				$fdisplay(file_id,"   \"result_dir\":\"results/j_10/t_hotspot/r_odd_even/s_aco/\",");
+				$fdisplay(file_id,"   \"routing\":\"odd_even\",");
+				$fdisplay(file_id,"   \"selection\":\"aco\",");
+				$fdisplay(file_id,"   \"traffic\":\"hotspot\",");
+				$fdisplay(file_id,"   \"packet_injection_rate\":%g,",PACKET_RATE);
+				$fdisplay(file_id,"   \"aco_packet_injection_rate\":%g,",ANT_PACKET_RATE);
+				$fdisplay(file_id,"   \"hotspot_packet_injection_rate\":%g",HOTSPOT_PACKET_RATE);
+	         $fdisplay(file_id,"}");
 				$fclose(file_id);
 			end
 			end
@@ -1040,38 +1097,54 @@ module tb_network
 	*************************************************************************************************************************************/
 
 			if(PACKET_RATE == 1 && traffic_type == 1 && routing_type == 2 && selection_type == 3)begin
-            file_id = $fopen(
-"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_1/t_uniform/r_odd_even/s_aco/stats.txt");
 			   
-			if (f_time == `warmup_packets_num*20-1) begin
+			if (f_time == `warmup_packets_num*10-1) begin
 	
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
-				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
-				$fdisplay(file_id,"",);
-				
-				$fdisplay(file_id," -- All packets:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Normal packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Ant packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
-				$fdisplay(file_id,"");
-			
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_1/t_uniform/r_odd_even/s_aco/stats.json");
+				$fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+	         $fdisplay(file_id,"   \"throughput\":%g,",f_throughput_o_all);
+	         $fdisplay(file_id,"   \"num_packets_transmitted\":%g,",f_measure_total_i_packet_count_all);
+	         $fdisplay(file_id,"   \"num_packets_received\":%g,",f_measure_total_o_packet_count_all);
+	         $fdisplay(file_id,"   \"average_packet_delay\":%g,",f_average_latency_all);
+	         $fdisplay(file_id,"   \"max_packet_delay\":%g,",f_max_latency_all);
+	         $fdisplay(file_id,"   \"packet.throughput\":%g,",f_throughput_o_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_received\":%g,",f_measure_total_o_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.average_packet_delay\":%g,",f_average_latency_normal);
+	         $fdisplay(file_id,"   \"packet.max_packet_delay\":%g,",f_max_latency_normal);
+	         $fdisplay(file_id,"   \"acopacket.throughput\":%g,",f_throughput_o_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_received\":%g,",f_measure_total_o_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.average_packet_delay\":%g,",f_average_latency_ant);
+	         $fdisplay(file_id,"   \"acopacket.max_packet_delay\":%g",f_max_latency_ant);
+	         $fdisplay(file_id,"}");
+				$fclose(file_id);
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_1/t_uniform/r_odd_even/s_aco/config.json");
+            $fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"num_nodes\":%g,",`NODES);
+				$fdisplay(file_id,"   \"warmup_packets\":%g,",WARMUP_PACKETS);
+				$fdisplay(file_id,"   \"measure_packets\":%g,",MEASURE_PACKETS);
+				$fdisplay(file_id,"   \"drain_packets\":%g,",DRAIN_PACKETS);
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+				$fdisplay(file_id,"   \"router_input_queue_depth\":%g,",`INPUT_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"PEnode_input_queue_depth\":%g,",NODE_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"create_ant_packet_period\":%g,",`CREATE_ANT_PERIOD);
+				$fdisplay(file_id,"   \"pheromone_table_value_width\":%g,",`PH_TABLE_DEPTH);
+				$fdisplay(file_id,"   \"result_dir\":\"results/j_10/t_hotspot/r_odd_even/s_aco/\",");
+				$fdisplay(file_id,"   \"routing\":\"odd_even\",");
+				$fdisplay(file_id,"   \"selection\":\"aco\",");
+				$fdisplay(file_id,"   \"traffic\":\"hotspot\",");
+				$fdisplay(file_id,"   \"packet_injection_rate\":%g,",PACKET_RATE);
+				$fdisplay(file_id,"   \"aco_packet_injection_rate\":%g,",ANT_PACKET_RATE);
+				$fdisplay(file_id,"   \"hotspot_packet_injection_rate\":%g",HOTSPOT_PACKET_RATE);
+	         $fdisplay(file_id,"}");
 				$fclose(file_id);
 			end
 			end
@@ -1080,38 +1153,54 @@ module tb_network
 
 	*************************************************************************************************************************************/
 			if(PACKET_RATE == 1 && traffic_type == 2 && routing_type == 1 && selection_type == 1)begin
-            file_id = $fopen(
-"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_1/t_transpose/r_xy/s_random/stats.txt");
 			   
-			if (f_time == `warmup_packets_num*20-1) begin
+			if (f_time == `warmup_packets_num*10-1) begin
 	
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
-				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
-				$fdisplay(file_id,"",);
-				
-				$fdisplay(file_id," -- All packets:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Normal packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Ant packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
-				$fdisplay(file_id,"");
-			
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_1/t_transpose/r_xy/s_random/stats.json");
+				$fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+	         $fdisplay(file_id,"   \"throughput\":%g,",f_throughput_o_all);
+	         $fdisplay(file_id,"   \"num_packets_transmitted\":%g,",f_measure_total_i_packet_count_all);
+	         $fdisplay(file_id,"   \"num_packets_received\":%g,",f_measure_total_o_packet_count_all);
+	         $fdisplay(file_id,"   \"average_packet_delay\":%g,",f_average_latency_all);
+	         $fdisplay(file_id,"   \"max_packet_delay\":%g,",f_max_latency_all);
+	         $fdisplay(file_id,"   \"packet.throughput\":%g,",f_throughput_o_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_received\":%g,",f_measure_total_o_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.average_packet_delay\":%g,",f_average_latency_normal);
+	         $fdisplay(file_id,"   \"packet.max_packet_delay\":%g,",f_max_latency_normal);
+	         $fdisplay(file_id,"   \"acopacket.throughput\":%g,",f_throughput_o_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_received\":%g,",f_measure_total_o_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.average_packet_delay\":%g,",f_average_latency_ant);
+	         $fdisplay(file_id,"   \"acopacket.max_packet_delay\":%g",f_max_latency_ant);
+	         $fdisplay(file_id,"}");
+				$fclose(file_id);
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_1/t_transpose/r_xy/s_random/config.json");
+            $fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"num_nodes\":%g,",`NODES);
+				$fdisplay(file_id,"   \"warmup_packets\":%g,",WARMUP_PACKETS);
+				$fdisplay(file_id,"   \"measure_packets\":%g,",MEASURE_PACKETS);
+				$fdisplay(file_id,"   \"drain_packets\":%g,",DRAIN_PACKETS);
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+				$fdisplay(file_id,"   \"router_input_queue_depth\":%g,",`INPUT_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"PEnode_input_queue_depth\":%g,",NODE_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"create_ant_packet_period\":%g,",`CREATE_ANT_PERIOD);
+				$fdisplay(file_id,"   \"pheromone_table_value_width\":%g,",`PH_TABLE_DEPTH);
+				$fdisplay(file_id,"   \"result_dir\":\"results/j_10/t_hotspot/r_odd_even/s_aco/\",");
+				$fdisplay(file_id,"   \"routing\":\"odd_even\",");
+				$fdisplay(file_id,"   \"selection\":\"aco\",");
+				$fdisplay(file_id,"   \"traffic\":\"hotspot\",");
+				$fdisplay(file_id,"   \"packet_injection_rate\":%g,",PACKET_RATE);
+				$fdisplay(file_id,"   \"aco_packet_injection_rate\":%g,",ANT_PACKET_RATE);
+				$fdisplay(file_id,"   \"hotspot_packet_injection_rate\":%g",HOTSPOT_PACKET_RATE);
+	         $fdisplay(file_id,"}");
 				$fclose(file_id);
 			end
 			end
@@ -1121,38 +1210,54 @@ module tb_network
 	*************************************************************************************************************************************/
 
 			if(PACKET_RATE == 1 && traffic_type == 2 && routing_type == 2 && selection_type == 1)begin
-            file_id = $fopen(
-"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_1/t_transpose/r_odd_even/s_random/stats.txt");
 			   
-			if (f_time == `warmup_packets_num*20-1) begin
+			if (f_time == `warmup_packets_num*10-1) begin
 	
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
-				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
-				$fdisplay(file_id,"",);
-				
-				$fdisplay(file_id," -- All packets:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Normal packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Ant packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
-				$fdisplay(file_id,"");
-			
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_1/t_transpose/r_odd_even/s_random/stats.json");
+				$fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+	         $fdisplay(file_id,"   \"throughput\":%g,",f_throughput_o_all);
+	         $fdisplay(file_id,"   \"num_packets_transmitted\":%g,",f_measure_total_i_packet_count_all);
+	         $fdisplay(file_id,"   \"num_packets_received\":%g,",f_measure_total_o_packet_count_all);
+	         $fdisplay(file_id,"   \"average_packet_delay\":%g,",f_average_latency_all);
+	         $fdisplay(file_id,"   \"max_packet_delay\":%g,",f_max_latency_all);
+	         $fdisplay(file_id,"   \"packet.throughput\":%g,",f_throughput_o_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_received\":%g,",f_measure_total_o_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.average_packet_delay\":%g,",f_average_latency_normal);
+	         $fdisplay(file_id,"   \"packet.max_packet_delay\":%g,",f_max_latency_normal);
+	         $fdisplay(file_id,"   \"acopacket.throughput\":%g,",f_throughput_o_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_received\":%g,",f_measure_total_o_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.average_packet_delay\":%g,",f_average_latency_ant);
+	         $fdisplay(file_id,"   \"acopacket.max_packet_delay\":%g",f_max_latency_ant);
+	         $fdisplay(file_id,"}");
+				$fclose(file_id);
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_1/t_transpose/r_odd_even/s_random/config.json");
+            $fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"num_nodes\":%g,",`NODES);
+				$fdisplay(file_id,"   \"warmup_packets\":%g,",WARMUP_PACKETS);
+				$fdisplay(file_id,"   \"measure_packets\":%g,",MEASURE_PACKETS);
+				$fdisplay(file_id,"   \"drain_packets\":%g,",DRAIN_PACKETS);
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+				$fdisplay(file_id,"   \"router_input_queue_depth\":%g,",`INPUT_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"PEnode_input_queue_depth\":%g,",NODE_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"create_ant_packet_period\":%g,",`CREATE_ANT_PERIOD);
+				$fdisplay(file_id,"   \"pheromone_table_value_width\":%g,",`PH_TABLE_DEPTH);
+				$fdisplay(file_id,"   \"result_dir\":\"results/j_10/t_hotspot/r_odd_even/s_aco/\",");
+				$fdisplay(file_id,"   \"routing\":\"odd_even\",");
+				$fdisplay(file_id,"   \"selection\":\"aco\",");
+				$fdisplay(file_id,"   \"traffic\":\"hotspot\",");
+				$fdisplay(file_id,"   \"packet_injection_rate\":%g,",PACKET_RATE);
+				$fdisplay(file_id,"   \"aco_packet_injection_rate\":%g,",ANT_PACKET_RATE);
+				$fdisplay(file_id,"   \"hotspot_packet_injection_rate\":%g",HOTSPOT_PACKET_RATE);
+	         $fdisplay(file_id,"}");
 				$fclose(file_id);
 			end
 			end
@@ -1162,38 +1267,54 @@ module tb_network
 	*************************************************************************************************************************************/
 
 			if(PACKET_RATE == 1 && traffic_type == 2 && routing_type == 2 && selection_type == 2)begin
-            file_id = $fopen(
-"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_1/t_transpose/r_odd_even/s_buffer_level/stats.txt");
 			   
-			if (f_time == `warmup_packets_num*20-1) begin
+			if (f_time == `warmup_packets_num*10-1) begin
 	
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
-				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
-				$fdisplay(file_id,"",);
-				
-				$fdisplay(file_id," -- All packets:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Normal packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Ant packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
-				$fdisplay(file_id,"");
-			
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_1/t_transpose/r_odd_even/s_buffer_level/stats.json");
+				$fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+	         $fdisplay(file_id,"   \"throughput\":%g,",f_throughput_o_all);
+	         $fdisplay(file_id,"   \"num_packets_transmitted\":%g,",f_measure_total_i_packet_count_all);
+	         $fdisplay(file_id,"   \"num_packets_received\":%g,",f_measure_total_o_packet_count_all);
+	         $fdisplay(file_id,"   \"average_packet_delay\":%g,",f_average_latency_all);
+	         $fdisplay(file_id,"   \"max_packet_delay\":%g,",f_max_latency_all);
+	         $fdisplay(file_id,"   \"packet.throughput\":%g,",f_throughput_o_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_received\":%g,",f_measure_total_o_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.average_packet_delay\":%g,",f_average_latency_normal);
+	         $fdisplay(file_id,"   \"packet.max_packet_delay\":%g,",f_max_latency_normal);
+	         $fdisplay(file_id,"   \"acopacket.throughput\":%g,",f_throughput_o_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_received\":%g,",f_measure_total_o_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.average_packet_delay\":%g,",f_average_latency_ant);
+	         $fdisplay(file_id,"   \"acopacket.max_packet_delay\":%g",f_max_latency_ant);
+	         $fdisplay(file_id,"}");
+				$fclose(file_id);
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_1/t_transpose/r_odd_even/s_buffer_level/config.json");
+            $fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"num_nodes\":%g,",`NODES);
+				$fdisplay(file_id,"   \"warmup_packets\":%g,",WARMUP_PACKETS);
+				$fdisplay(file_id,"   \"measure_packets\":%g,",MEASURE_PACKETS);
+				$fdisplay(file_id,"   \"drain_packets\":%g,",DRAIN_PACKETS);
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+				$fdisplay(file_id,"   \"router_input_queue_depth\":%g,",`INPUT_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"PEnode_input_queue_depth\":%g,",NODE_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"create_ant_packet_period\":%g,",`CREATE_ANT_PERIOD);
+				$fdisplay(file_id,"   \"pheromone_table_value_width\":%g,",`PH_TABLE_DEPTH);
+				$fdisplay(file_id,"   \"result_dir\":\"results/j_10/t_hotspot/r_odd_even/s_aco/\",");
+				$fdisplay(file_id,"   \"routing\":\"odd_even\",");
+				$fdisplay(file_id,"   \"selection\":\"aco\",");
+				$fdisplay(file_id,"   \"traffic\":\"hotspot\",");
+				$fdisplay(file_id,"   \"packet_injection_rate\":%g,",PACKET_RATE);
+				$fdisplay(file_id,"   \"aco_packet_injection_rate\":%g,",ANT_PACKET_RATE);
+				$fdisplay(file_id,"   \"hotspot_packet_injection_rate\":%g",HOTSPOT_PACKET_RATE);
+	         $fdisplay(file_id,"}");
 				$fclose(file_id);
 			end
 			end
@@ -1203,38 +1324,54 @@ module tb_network
 	*************************************************************************************************************************************/
 
 			if(PACKET_RATE == 1 && traffic_type == 2 && routing_type == 2 && selection_type == 3)begin
-            file_id = $fopen(
-"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_1/t_transpose/r_odd_even/s_aco/stats.txt");
 			   
-			if (f_time == `warmup_packets_num*20-1) begin
+			if (f_time == `warmup_packets_num*10-1) begin
 	
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
-				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
-				$fdisplay(file_id,"",);
-				
-				$fdisplay(file_id," -- All packets:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Normal packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Ant packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
-				$fdisplay(file_id,"");
-			
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_1/t_transpose/r_odd_even/s_aco/stats.json");
+				$fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+	         $fdisplay(file_id,"   \"throughput\":%g,",f_throughput_o_all);
+	         $fdisplay(file_id,"   \"num_packets_transmitted\":%g,",f_measure_total_i_packet_count_all);
+	         $fdisplay(file_id,"   \"num_packets_received\":%g,",f_measure_total_o_packet_count_all);
+	         $fdisplay(file_id,"   \"average_packet_delay\":%g,",f_average_latency_all);
+	         $fdisplay(file_id,"   \"max_packet_delay\":%g,",f_max_latency_all);
+	         $fdisplay(file_id,"   \"packet.throughput\":%g,",f_throughput_o_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_received\":%g,",f_measure_total_o_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.average_packet_delay\":%g,",f_average_latency_normal);
+	         $fdisplay(file_id,"   \"packet.max_packet_delay\":%g,",f_max_latency_normal);
+	         $fdisplay(file_id,"   \"acopacket.throughput\":%g,",f_throughput_o_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_received\":%g,",f_measure_total_o_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.average_packet_delay\":%g,",f_average_latency_ant);
+	         $fdisplay(file_id,"   \"acopacket.max_packet_delay\":%g",f_max_latency_ant);
+	         $fdisplay(file_id,"}");
+				$fclose(file_id);
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_1/t_transpose/r_odd_even/s_aco/config.json");
+            $fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"num_nodes\":%g,",`NODES);
+				$fdisplay(file_id,"   \"warmup_packets\":%g,",WARMUP_PACKETS);
+				$fdisplay(file_id,"   \"measure_packets\":%g,",MEASURE_PACKETS);
+				$fdisplay(file_id,"   \"drain_packets\":%g,",DRAIN_PACKETS);
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+				$fdisplay(file_id,"   \"router_input_queue_depth\":%g,",`INPUT_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"PEnode_input_queue_depth\":%g,",NODE_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"create_ant_packet_period\":%g,",`CREATE_ANT_PERIOD);
+				$fdisplay(file_id,"   \"pheromone_table_value_width\":%g,",`PH_TABLE_DEPTH);
+				$fdisplay(file_id,"   \"result_dir\":\"results/j_10/t_hotspot/r_odd_even/s_aco/\",");
+				$fdisplay(file_id,"   \"routing\":\"odd_even\",");
+				$fdisplay(file_id,"   \"selection\":\"aco\",");
+				$fdisplay(file_id,"   \"traffic\":\"hotspot\",");
+				$fdisplay(file_id,"   \"packet_injection_rate\":%g,",PACKET_RATE);
+				$fdisplay(file_id,"   \"aco_packet_injection_rate\":%g,",ANT_PACKET_RATE);
+				$fdisplay(file_id,"   \"hotspot_packet_injection_rate\":%g",HOTSPOT_PACKET_RATE);
+	         $fdisplay(file_id,"}");
 				$fclose(file_id);
 			end
 			end
@@ -1243,38 +1380,54 @@ module tb_network
 
 	*************************************************************************************************************************************/
 			if(PACKET_RATE == 1 && traffic_type == 3 && routing_type == 1 && selection_type == 1)begin
-            file_id = $fopen(
-"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_1/t_hotspot/r_xy/s_random/stats.txt");
 			   
-			if (f_time == `warmup_packets_num*20-1) begin
+			if (f_time == `warmup_packets_num*10-1) begin
 	
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
-				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
-				$fdisplay(file_id,"",);
-				
-				$fdisplay(file_id," -- All packets:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Normal packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Ant packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
-				$fdisplay(file_id,"");
-			
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_1/t_hotspot/r_xy/s_random/stats.json");
+				$fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+	         $fdisplay(file_id,"   \"throughput\":%g,",f_throughput_o_all);
+	         $fdisplay(file_id,"   \"num_packets_transmitted\":%g,",f_measure_total_i_packet_count_all);
+	         $fdisplay(file_id,"   \"num_packets_received\":%g,",f_measure_total_o_packet_count_all);
+	         $fdisplay(file_id,"   \"average_packet_delay\":%g,",f_average_latency_all);
+	         $fdisplay(file_id,"   \"max_packet_delay\":%g,",f_max_latency_all);
+	         $fdisplay(file_id,"   \"packet.throughput\":%g,",f_throughput_o_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_received\":%g,",f_measure_total_o_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.average_packet_delay\":%g,",f_average_latency_normal);
+	         $fdisplay(file_id,"   \"packet.max_packet_delay\":%g,",f_max_latency_normal);
+	         $fdisplay(file_id,"   \"acopacket.throughput\":%g,",f_throughput_o_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_received\":%g,",f_measure_total_o_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.average_packet_delay\":%g,",f_average_latency_ant);
+	         $fdisplay(file_id,"   \"acopacket.max_packet_delay\":%g",f_max_latency_ant);
+	         $fdisplay(file_id,"}");
+				$fclose(file_id);
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_1/t_hotspot/r_xy/s_random/config.json");
+            $fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"num_nodes\":%g,",`NODES);
+				$fdisplay(file_id,"   \"warmup_packets\":%g,",WARMUP_PACKETS);
+				$fdisplay(file_id,"   \"measure_packets\":%g,",MEASURE_PACKETS);
+				$fdisplay(file_id,"   \"drain_packets\":%g,",DRAIN_PACKETS);
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+				$fdisplay(file_id,"   \"router_input_queue_depth\":%g,",`INPUT_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"PEnode_input_queue_depth\":%g,",NODE_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"create_ant_packet_period\":%g,",`CREATE_ANT_PERIOD);
+				$fdisplay(file_id,"   \"pheromone_table_value_width\":%g,",`PH_TABLE_DEPTH);
+				$fdisplay(file_id,"   \"result_dir\":\"results/j_10/t_hotspot/r_odd_even/s_aco/\",");
+				$fdisplay(file_id,"   \"routing\":\"odd_even\",");
+				$fdisplay(file_id,"   \"selection\":\"aco\",");
+				$fdisplay(file_id,"   \"traffic\":\"hotspot\",");
+				$fdisplay(file_id,"   \"packet_injection_rate\":%g,",PACKET_RATE);
+				$fdisplay(file_id,"   \"aco_packet_injection_rate\":%g,",ANT_PACKET_RATE);
+				$fdisplay(file_id,"   \"hotspot_packet_injection_rate\":%g",HOTSPOT_PACKET_RATE);
+	         $fdisplay(file_id,"}");
 				$fclose(file_id);
 			end
 			end
@@ -1284,38 +1437,54 @@ module tb_network
 	*************************************************************************************************************************************/
 
 			if(PACKET_RATE == 1 && traffic_type == 3 && routing_type == 2 && selection_type == 1)begin
-            file_id = $fopen(
-"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_1/t_hotspot/r_odd_even/s_random/stats.txt");
 			   
-			if (f_time == `warmup_packets_num*20-1) begin
+			if (f_time == `warmup_packets_num*10-1) begin
 	
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
-				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
-				$fdisplay(file_id,"",);
-				
-				$fdisplay(file_id," -- All packets:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Normal packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Ant packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
-				$fdisplay(file_id,"");
-			
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_1/t_hotspot/r_odd_even/s_random/stats.json");
+				$fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+	         $fdisplay(file_id,"   \"throughput\":%g,",f_throughput_o_all);
+	         $fdisplay(file_id,"   \"num_packets_transmitted\":%g,",f_measure_total_i_packet_count_all);
+	         $fdisplay(file_id,"   \"num_packets_received\":%g,",f_measure_total_o_packet_count_all);
+	         $fdisplay(file_id,"   \"average_packet_delay\":%g,",f_average_latency_all);
+	         $fdisplay(file_id,"   \"max_packet_delay\":%g,",f_max_latency_all);
+	         $fdisplay(file_id,"   \"packet.throughput\":%g,",f_throughput_o_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_received\":%g,",f_measure_total_o_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.average_packet_delay\":%g,",f_average_latency_normal);
+	         $fdisplay(file_id,"   \"packet.max_packet_delay\":%g,",f_max_latency_normal);
+	         $fdisplay(file_id,"   \"acopacket.throughput\":%g,",f_throughput_o_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_received\":%g,",f_measure_total_o_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.average_packet_delay\":%g,",f_average_latency_ant);
+	         $fdisplay(file_id,"   \"acopacket.max_packet_delay\":%g",f_max_latency_ant);
+	         $fdisplay(file_id,"}");
+				$fclose(file_id);
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_1/t_hotspot/r_odd_even/s_random/config.json");
+            $fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"num_nodes\":%g,",`NODES);
+				$fdisplay(file_id,"   \"warmup_packets\":%g,",WARMUP_PACKETS);
+				$fdisplay(file_id,"   \"measure_packets\":%g,",MEASURE_PACKETS);
+				$fdisplay(file_id,"   \"drain_packets\":%g,",DRAIN_PACKETS);
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+				$fdisplay(file_id,"   \"router_input_queue_depth\":%g,",`INPUT_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"PEnode_input_queue_depth\":%g,",NODE_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"create_ant_packet_period\":%g,",`CREATE_ANT_PERIOD);
+				$fdisplay(file_id,"   \"pheromone_table_value_width\":%g,",`PH_TABLE_DEPTH);
+				$fdisplay(file_id,"   \"result_dir\":\"results/j_10/t_hotspot/r_odd_even/s_aco/\",");
+				$fdisplay(file_id,"   \"routing\":\"odd_even\",");
+				$fdisplay(file_id,"   \"selection\":\"aco\",");
+				$fdisplay(file_id,"   \"traffic\":\"hotspot\",");
+				$fdisplay(file_id,"   \"packet_injection_rate\":%g,",PACKET_RATE);
+				$fdisplay(file_id,"   \"aco_packet_injection_rate\":%g,",ANT_PACKET_RATE);
+				$fdisplay(file_id,"   \"hotspot_packet_injection_rate\":%g",HOTSPOT_PACKET_RATE);
+	         $fdisplay(file_id,"}");
 				$fclose(file_id);
 			end
 			end
@@ -1325,38 +1494,54 @@ module tb_network
 	*************************************************************************************************************************************/
 
 			if(PACKET_RATE == 1 && traffic_type == 3 && routing_type == 2 && selection_type == 2)begin
-            file_id = $fopen(
-"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_1/t_hotspot/r_odd_even/s_buffer_level/stats.txt");
 			   
-			if (f_time == `warmup_packets_num*20-1) begin
+			if (f_time == `warmup_packets_num*10-1) begin
 	
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
-				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
-				$fdisplay(file_id,"",);
-				
-				$fdisplay(file_id," -- All packets:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Normal packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Ant packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
-				$fdisplay(file_id,"");
-			
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_1/t_hotspot/r_odd_even/s_buffer_level/stats.json");
+				$fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+	         $fdisplay(file_id,"   \"throughput\":%g,",f_throughput_o_all);
+	         $fdisplay(file_id,"   \"num_packets_transmitted\":%g,",f_measure_total_i_packet_count_all);
+	         $fdisplay(file_id,"   \"num_packets_received\":%g,",f_measure_total_o_packet_count_all);
+	         $fdisplay(file_id,"   \"average_packet_delay\":%g,",f_average_latency_all);
+	         $fdisplay(file_id,"   \"max_packet_delay\":%g,",f_max_latency_all);
+	         $fdisplay(file_id,"   \"packet.throughput\":%g,",f_throughput_o_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_received\":%g,",f_measure_total_o_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.average_packet_delay\":%g,",f_average_latency_normal);
+	         $fdisplay(file_id,"   \"packet.max_packet_delay\":%g,",f_max_latency_normal);
+	         $fdisplay(file_id,"   \"acopacket.throughput\":%g,",f_throughput_o_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_received\":%g,",f_measure_total_o_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.average_packet_delay\":%g,",f_average_latency_ant);
+	         $fdisplay(file_id,"   \"acopacket.max_packet_delay\":%g",f_max_latency_ant);
+	         $fdisplay(file_id,"}");
+				$fclose(file_id);
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_1/t_hotspot/r_odd_even/s_buffer_level/config.json");
+            $fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"num_nodes\":%g,",`NODES);
+				$fdisplay(file_id,"   \"warmup_packets\":%g,",WARMUP_PACKETS);
+				$fdisplay(file_id,"   \"measure_packets\":%g,",MEASURE_PACKETS);
+				$fdisplay(file_id,"   \"drain_packets\":%g,",DRAIN_PACKETS);
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+				$fdisplay(file_id,"   \"router_input_queue_depth\":%g,",`INPUT_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"PEnode_input_queue_depth\":%g,",NODE_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"create_ant_packet_period\":%g,",`CREATE_ANT_PERIOD);
+				$fdisplay(file_id,"   \"pheromone_table_value_width\":%g,",`PH_TABLE_DEPTH);
+				$fdisplay(file_id,"   \"result_dir\":\"results/j_10/t_hotspot/r_odd_even/s_aco/\",");
+				$fdisplay(file_id,"   \"routing\":\"odd_even\",");
+				$fdisplay(file_id,"   \"selection\":\"aco\",");
+				$fdisplay(file_id,"   \"traffic\":\"hotspot\",");
+				$fdisplay(file_id,"   \"packet_injection_rate\":%g,",PACKET_RATE);
+				$fdisplay(file_id,"   \"aco_packet_injection_rate\":%g,",ANT_PACKET_RATE);
+				$fdisplay(file_id,"   \"hotspot_packet_injection_rate\":%g",HOTSPOT_PACKET_RATE);
+	         $fdisplay(file_id,"}");
 				$fclose(file_id);
 			end
 			end
@@ -1366,38 +1551,54 @@ module tb_network
 	*************************************************************************************************************************************/
 
 			if(PACKET_RATE == 1 && traffic_type == 3 && routing_type == 2 && selection_type == 3)begin
-            file_id = $fopen(
-"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_1/t_hotspot/r_odd_even/s_aco/stats.txt");
 			   
-			if (f_time == `warmup_packets_num*20-1) begin
+			if (f_time == `warmup_packets_num*10-1) begin
 	
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
-				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
-				$fdisplay(file_id,"",);
-				
-				$fdisplay(file_id," -- All packets:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Normal packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Ant packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
-				$fdisplay(file_id,"");
-			
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_1/t_hotspot/r_odd_even/s_aco/stats.json");
+				$fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+	         $fdisplay(file_id,"   \"throughput\":%g,",f_throughput_o_all);
+	         $fdisplay(file_id,"   \"num_packets_transmitted\":%g,",f_measure_total_i_packet_count_all);
+	         $fdisplay(file_id,"   \"num_packets_received\":%g,",f_measure_total_o_packet_count_all);
+	         $fdisplay(file_id,"   \"average_packet_delay\":%g,",f_average_latency_all);
+	         $fdisplay(file_id,"   \"max_packet_delay\":%g,",f_max_latency_all);
+	         $fdisplay(file_id,"   \"packet.throughput\":%g,",f_throughput_o_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_received\":%g,",f_measure_total_o_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.average_packet_delay\":%g,",f_average_latency_normal);
+	         $fdisplay(file_id,"   \"packet.max_packet_delay\":%g,",f_max_latency_normal);
+	         $fdisplay(file_id,"   \"acopacket.throughput\":%g,",f_throughput_o_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_received\":%g,",f_measure_total_o_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.average_packet_delay\":%g,",f_average_latency_ant);
+	         $fdisplay(file_id,"   \"acopacket.max_packet_delay\":%g",f_max_latency_ant);
+	         $fdisplay(file_id,"}");
+				$fclose(file_id);
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_1/t_hotspot/r_odd_even/s_aco/config.json");
+            $fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"num_nodes\":%g,",`NODES);
+				$fdisplay(file_id,"   \"warmup_packets\":%g,",WARMUP_PACKETS);
+				$fdisplay(file_id,"   \"measure_packets\":%g,",MEASURE_PACKETS);
+				$fdisplay(file_id,"   \"drain_packets\":%g,",DRAIN_PACKETS);
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+				$fdisplay(file_id,"   \"router_input_queue_depth\":%g,",`INPUT_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"PEnode_input_queue_depth\":%g,",NODE_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"create_ant_packet_period\":%g,",`CREATE_ANT_PERIOD);
+				$fdisplay(file_id,"   \"pheromone_table_value_width\":%g,",`PH_TABLE_DEPTH);
+				$fdisplay(file_id,"   \"result_dir\":\"results/j_10/t_hotspot/r_odd_even/s_aco/\",");
+				$fdisplay(file_id,"   \"routing\":\"odd_even\",");
+				$fdisplay(file_id,"   \"selection\":\"aco\",");
+				$fdisplay(file_id,"   \"traffic\":\"hotspot\",");
+				$fdisplay(file_id,"   \"packet_injection_rate\":%g,",PACKET_RATE);
+				$fdisplay(file_id,"   \"aco_packet_injection_rate\":%g,",ANT_PACKET_RATE);
+				$fdisplay(file_id,"   \"hotspot_packet_injection_rate\":%g",HOTSPOT_PACKET_RATE);
+	         $fdisplay(file_id,"}");
 				$fclose(file_id);
 			end
 			end
@@ -1412,38 +1613,54 @@ module tb_network
 
 	*************************************************************************************************************************************/
 			if(PACKET_RATE == 5 && traffic_type == 1 && routing_type == 1 && selection_type == 1)begin
-            file_id = $fopen(
-"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_5/t_uniform/r_xy/s_random/stats.txt");
 			   
-			if (f_time == `warmup_packets_num*20-1) begin
+			if (f_time == `warmup_packets_num*10-1) begin
 	
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
-				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
-				$fdisplay(file_id,"",);
-				
-				$fdisplay(file_id," -- All packets:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Normal packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Ant packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
-				$fdisplay(file_id,"");
-			
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_5/t_uniform/r_xy/s_random/stats.json");
+				$fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+	         $fdisplay(file_id,"   \"throughput\":%g,",f_throughput_o_all);
+	         $fdisplay(file_id,"   \"num_packets_transmitted\":%g,",f_measure_total_i_packet_count_all);
+	         $fdisplay(file_id,"   \"num_packets_received\":%g,",f_measure_total_o_packet_count_all);
+	         $fdisplay(file_id,"   \"average_packet_delay\":%g,",f_average_latency_all);
+	         $fdisplay(file_id,"   \"max_packet_delay\":%g,",f_max_latency_all);
+	         $fdisplay(file_id,"   \"packet.throughput\":%g,",f_throughput_o_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_received\":%g,",f_measure_total_o_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.average_packet_delay\":%g,",f_average_latency_normal);
+	         $fdisplay(file_id,"   \"packet.max_packet_delay\":%g,",f_max_latency_normal);
+	         $fdisplay(file_id,"   \"acopacket.throughput\":%g,",f_throughput_o_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_received\":%g,",f_measure_total_o_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.average_packet_delay\":%g,",f_average_latency_ant);
+	         $fdisplay(file_id,"   \"acopacket.max_packet_delay\":%g",f_max_latency_ant);
+	         $fdisplay(file_id,"}");
+				$fclose(file_id);
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_5/t_uniform/r_xy/s_random/config.json");
+            $fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"num_nodes\":%g,",`NODES);
+				$fdisplay(file_id,"   \"warmup_packets\":%g,",WARMUP_PACKETS);
+				$fdisplay(file_id,"   \"measure_packets\":%g,",MEASURE_PACKETS);
+				$fdisplay(file_id,"   \"drain_packets\":%g,",DRAIN_PACKETS);
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+				$fdisplay(file_id,"   \"router_input_queue_depth\":%g,",`INPUT_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"PEnode_input_queue_depth\":%g,",NODE_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"create_ant_packet_period\":%g,",`CREATE_ANT_PERIOD);
+				$fdisplay(file_id,"   \"pheromone_table_value_width\":%g,",`PH_TABLE_DEPTH);
+				$fdisplay(file_id,"   \"result_dir\":\"results/j_10/t_hotspot/r_odd_even/s_aco/\",");
+				$fdisplay(file_id,"   \"routing\":\"odd_even\",");
+				$fdisplay(file_id,"   \"selection\":\"aco\",");
+				$fdisplay(file_id,"   \"traffic\":\"hotspot\",");
+				$fdisplay(file_id,"   \"packet_injection_rate\":%g,",PACKET_RATE);
+				$fdisplay(file_id,"   \"aco_packet_injection_rate\":%g,",ANT_PACKET_RATE);
+				$fdisplay(file_id,"   \"hotspot_packet_injection_rate\":%g",HOTSPOT_PACKET_RATE);
+	         $fdisplay(file_id,"}");
 				$fclose(file_id);
 			end
 			end
@@ -1453,38 +1670,54 @@ module tb_network
 	*************************************************************************************************************************************/
 
 			if(PACKET_RATE == 5 && traffic_type == 1 && routing_type == 2 && selection_type == 1)begin
-            file_id = $fopen(
-"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_5/t_uniform/r_odd_even/s_random/stats.txt");
 			   
-			if (f_time == `warmup_packets_num*20-1) begin
+			if (f_time == `warmup_packets_num*10-1) begin
 	
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
-				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
-				$fdisplay(file_id,"",);
-				
-				$fdisplay(file_id," -- All packets:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Normal packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Ant packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
-				$fdisplay(file_id,"");
-			
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_5/t_uniform/r_odd_even/s_random/stats.json");
+				$fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+	         $fdisplay(file_id,"   \"throughput\":%g,",f_throughput_o_all);
+	         $fdisplay(file_id,"   \"num_packets_transmitted\":%g,",f_measure_total_i_packet_count_all);
+	         $fdisplay(file_id,"   \"num_packets_received\":%g,",f_measure_total_o_packet_count_all);
+	         $fdisplay(file_id,"   \"average_packet_delay\":%g,",f_average_latency_all);
+	         $fdisplay(file_id,"   \"max_packet_delay\":%g,",f_max_latency_all);
+	         $fdisplay(file_id,"   \"packet.throughput\":%g,",f_throughput_o_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_received\":%g,",f_measure_total_o_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.average_packet_delay\":%g,",f_average_latency_normal);
+	         $fdisplay(file_id,"   \"packet.max_packet_delay\":%g,",f_max_latency_normal);
+	         $fdisplay(file_id,"   \"acopacket.throughput\":%g,",f_throughput_o_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_received\":%g,",f_measure_total_o_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.average_packet_delay\":%g,",f_average_latency_ant);
+	         $fdisplay(file_id,"   \"acopacket.max_packet_delay\":%g",f_max_latency_ant);
+	         $fdisplay(file_id,"}");
+				$fclose(file_id);
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_5/t_uniform/r_odd_even/s_random/config.json");
+            $fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"num_nodes\":%g,",`NODES);
+				$fdisplay(file_id,"   \"warmup_packets\":%g,",WARMUP_PACKETS);
+				$fdisplay(file_id,"   \"measure_packets\":%g,",MEASURE_PACKETS);
+				$fdisplay(file_id,"   \"drain_packets\":%g,",DRAIN_PACKETS);
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+				$fdisplay(file_id,"   \"router_input_queue_depth\":%g,",`INPUT_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"PEnode_input_queue_depth\":%g,",NODE_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"create_ant_packet_period\":%g,",`CREATE_ANT_PERIOD);
+				$fdisplay(file_id,"   \"pheromone_table_value_width\":%g,",`PH_TABLE_DEPTH);
+				$fdisplay(file_id,"   \"result_dir\":\"results/j_10/t_hotspot/r_odd_even/s_aco/\",");
+				$fdisplay(file_id,"   \"routing\":\"odd_even\",");
+				$fdisplay(file_id,"   \"selection\":\"aco\",");
+				$fdisplay(file_id,"   \"traffic\":\"hotspot\",");
+				$fdisplay(file_id,"   \"packet_injection_rate\":%g,",PACKET_RATE);
+				$fdisplay(file_id,"   \"aco_packet_injection_rate\":%g,",ANT_PACKET_RATE);
+				$fdisplay(file_id,"   \"hotspot_packet_injection_rate\":%g",HOTSPOT_PACKET_RATE);
+	         $fdisplay(file_id,"}");
 				$fclose(file_id);
 			end
 			end
@@ -1494,38 +1727,54 @@ module tb_network
 	*************************************************************************************************************************************/
 
 			if(PACKET_RATE == 5 && traffic_type == 1 && routing_type == 2 && selection_type == 2)begin
-            file_id = $fopen(
-"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_5/t_uniform/r_odd_even/s_buffer_level/stats.txt");
 			   
-			if (f_time == `warmup_packets_num*20-1) begin
+			if (f_time == `warmup_packets_num*10-1) begin
 	
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
-				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
-				$fdisplay(file_id,"",);
-				
-				$fdisplay(file_id," -- All packets:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Normal packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Ant packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
-				$fdisplay(file_id,"");
-			
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_5/t_uniform/r_odd_even/s_buffer_level/stats.json");
+				$fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+	         $fdisplay(file_id,"   \"throughput\":%g,",f_throughput_o_all);
+	         $fdisplay(file_id,"   \"num_packets_transmitted\":%g,",f_measure_total_i_packet_count_all);
+	         $fdisplay(file_id,"   \"num_packets_received\":%g,",f_measure_total_o_packet_count_all);
+	         $fdisplay(file_id,"   \"average_packet_delay\":%g,",f_average_latency_all);
+	         $fdisplay(file_id,"   \"max_packet_delay\":%g,",f_max_latency_all);
+	         $fdisplay(file_id,"   \"packet.throughput\":%g,",f_throughput_o_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_received\":%g,",f_measure_total_o_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.average_packet_delay\":%g,",f_average_latency_normal);
+	         $fdisplay(file_id,"   \"packet.max_packet_delay\":%g,",f_max_latency_normal);
+	         $fdisplay(file_id,"   \"acopacket.throughput\":%g,",f_throughput_o_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_received\":%g,",f_measure_total_o_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.average_packet_delay\":%g,",f_average_latency_ant);
+	         $fdisplay(file_id,"   \"acopacket.max_packet_delay\":%g",f_max_latency_ant);
+	         $fdisplay(file_id,"}");
+				$fclose(file_id);
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_5/t_uniform/r_odd_even/s_buffer_level/config.json");
+            $fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"num_nodes\":%g,",`NODES);
+				$fdisplay(file_id,"   \"warmup_packets\":%g,",WARMUP_PACKETS);
+				$fdisplay(file_id,"   \"measure_packets\":%g,",MEASURE_PACKETS);
+				$fdisplay(file_id,"   \"drain_packets\":%g,",DRAIN_PACKETS);
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+				$fdisplay(file_id,"   \"router_input_queue_depth\":%g,",`INPUT_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"PEnode_input_queue_depth\":%g,",NODE_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"create_ant_packet_period\":%g,",`CREATE_ANT_PERIOD);
+				$fdisplay(file_id,"   \"pheromone_table_value_width\":%g,",`PH_TABLE_DEPTH);
+				$fdisplay(file_id,"   \"result_dir\":\"results/j_10/t_hotspot/r_odd_even/s_aco/\",");
+				$fdisplay(file_id,"   \"routing\":\"odd_even\",");
+				$fdisplay(file_id,"   \"selection\":\"aco\",");
+				$fdisplay(file_id,"   \"traffic\":\"hotspot\",");
+				$fdisplay(file_id,"   \"packet_injection_rate\":%g,",PACKET_RATE);
+				$fdisplay(file_id,"   \"aco_packet_injection_rate\":%g,",ANT_PACKET_RATE);
+				$fdisplay(file_id,"   \"hotspot_packet_injection_rate\":%g",HOTSPOT_PACKET_RATE);
+	         $fdisplay(file_id,"}");
 				$fclose(file_id);
 			end
 			end
@@ -1535,38 +1784,54 @@ module tb_network
 	*************************************************************************************************************************************/
 
 			if(PACKET_RATE == 5 && traffic_type == 1 && routing_type == 2 && selection_type == 3)begin
-            file_id = $fopen(
-"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_5/t_uniform/r_odd_even/s_aco/stats.txt");
 			   
-			if (f_time == `warmup_packets_num*20-1) begin
+			if (f_time == `warmup_packets_num*10-1) begin
 	
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
-				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
-				$fdisplay(file_id,"",);
-				
-				$fdisplay(file_id," -- All packets:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Normal packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Ant packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
-				$fdisplay(file_id,"");
-			
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_5/t_uniform/r_odd_even/s_aco/stats.json");
+				$fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+	         $fdisplay(file_id,"   \"throughput\":%g,",f_throughput_o_all);
+	         $fdisplay(file_id,"   \"num_packets_transmitted\":%g,",f_measure_total_i_packet_count_all);
+	         $fdisplay(file_id,"   \"num_packets_received\":%g,",f_measure_total_o_packet_count_all);
+	         $fdisplay(file_id,"   \"average_packet_delay\":%g,",f_average_latency_all);
+	         $fdisplay(file_id,"   \"max_packet_delay\":%g,",f_max_latency_all);
+	         $fdisplay(file_id,"   \"packet.throughput\":%g,",f_throughput_o_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_received\":%g,",f_measure_total_o_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.average_packet_delay\":%g,",f_average_latency_normal);
+	         $fdisplay(file_id,"   \"packet.max_packet_delay\":%g,",f_max_latency_normal);
+	         $fdisplay(file_id,"   \"acopacket.throughput\":%g,",f_throughput_o_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_received\":%g,",f_measure_total_o_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.average_packet_delay\":%g,",f_average_latency_ant);
+	         $fdisplay(file_id,"   \"acopacket.max_packet_delay\":%g",f_max_latency_ant);
+	         $fdisplay(file_id,"}");
+				$fclose(file_id);
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_5/t_uniform/r_odd_even/s_aco/config.json");
+            $fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"num_nodes\":%g,",`NODES);
+				$fdisplay(file_id,"   \"warmup_packets\":%g,",WARMUP_PACKETS);
+				$fdisplay(file_id,"   \"measure_packets\":%g,",MEASURE_PACKETS);
+				$fdisplay(file_id,"   \"drain_packets\":%g,",DRAIN_PACKETS);
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+				$fdisplay(file_id,"   \"router_input_queue_depth\":%g,",`INPUT_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"PEnode_input_queue_depth\":%g,",NODE_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"create_ant_packet_period\":%g,",`CREATE_ANT_PERIOD);
+				$fdisplay(file_id,"   \"pheromone_table_value_width\":%g,",`PH_TABLE_DEPTH);
+				$fdisplay(file_id,"   \"result_dir\":\"results/j_10/t_hotspot/r_odd_even/s_aco/\",");
+				$fdisplay(file_id,"   \"routing\":\"odd_even\",");
+				$fdisplay(file_id,"   \"selection\":\"aco\",");
+				$fdisplay(file_id,"   \"traffic\":\"hotspot\",");
+				$fdisplay(file_id,"   \"packet_injection_rate\":%g,",PACKET_RATE);
+				$fdisplay(file_id,"   \"aco_packet_injection_rate\":%g,",ANT_PACKET_RATE);
+				$fdisplay(file_id,"   \"hotspot_packet_injection_rate\":%g",HOTSPOT_PACKET_RATE);
+	         $fdisplay(file_id,"}");
 				$fclose(file_id);
 			end
 			end
@@ -1575,38 +1840,54 @@ module tb_network
 
 	*************************************************************************************************************************************/
 			if(PACKET_RATE == 5 && traffic_type == 2 && routing_type == 1 && selection_type == 1)begin
-            file_id = $fopen(
-"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_5/t_transpose/r_xy/s_random/stats.txt");
 			   
-			if (f_time == `warmup_packets_num*20-1) begin
+			if (f_time == `warmup_packets_num*10-1) begin
 	
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
-				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
-				$fdisplay(file_id,"",);
-				
-				$fdisplay(file_id," -- All packets:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Normal packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Ant packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
-				$fdisplay(file_id,"");
-			
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_5/t_transpose/r_xy/s_random/stats.json");
+				$fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+	         $fdisplay(file_id,"   \"throughput\":%g,",f_throughput_o_all);
+	         $fdisplay(file_id,"   \"num_packets_transmitted\":%g,",f_measure_total_i_packet_count_all);
+	         $fdisplay(file_id,"   \"num_packets_received\":%g,",f_measure_total_o_packet_count_all);
+	         $fdisplay(file_id,"   \"average_packet_delay\":%g,",f_average_latency_all);
+	         $fdisplay(file_id,"   \"max_packet_delay\":%g,",f_max_latency_all);
+	         $fdisplay(file_id,"   \"packet.throughput\":%g,",f_throughput_o_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_received\":%g,",f_measure_total_o_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.average_packet_delay\":%g,",f_average_latency_normal);
+	         $fdisplay(file_id,"   \"packet.max_packet_delay\":%g,",f_max_latency_normal);
+	         $fdisplay(file_id,"   \"acopacket.throughput\":%g,",f_throughput_o_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_received\":%g,",f_measure_total_o_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.average_packet_delay\":%g,",f_average_latency_ant);
+	         $fdisplay(file_id,"   \"acopacket.max_packet_delay\":%g",f_max_latency_ant);
+	         $fdisplay(file_id,"}");
+				$fclose(file_id);
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_5/t_transpose/r_xy/s_random/config.json");
+            $fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"num_nodes\":%g,",`NODES);
+				$fdisplay(file_id,"   \"warmup_packets\":%g,",WARMUP_PACKETS);
+				$fdisplay(file_id,"   \"measure_packets\":%g,",MEASURE_PACKETS);
+				$fdisplay(file_id,"   \"drain_packets\":%g,",DRAIN_PACKETS);
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+				$fdisplay(file_id,"   \"router_input_queue_depth\":%g,",`INPUT_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"PEnode_input_queue_depth\":%g,",NODE_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"create_ant_packet_period\":%g,",`CREATE_ANT_PERIOD);
+				$fdisplay(file_id,"   \"pheromone_table_value_width\":%g,",`PH_TABLE_DEPTH);
+				$fdisplay(file_id,"   \"result_dir\":\"results/j_10/t_hotspot/r_odd_even/s_aco/\",");
+				$fdisplay(file_id,"   \"routing\":\"odd_even\",");
+				$fdisplay(file_id,"   \"selection\":\"aco\",");
+				$fdisplay(file_id,"   \"traffic\":\"hotspot\",");
+				$fdisplay(file_id,"   \"packet_injection_rate\":%g,",PACKET_RATE);
+				$fdisplay(file_id,"   \"aco_packet_injection_rate\":%g,",ANT_PACKET_RATE);
+				$fdisplay(file_id,"   \"hotspot_packet_injection_rate\":%g",HOTSPOT_PACKET_RATE);
+	         $fdisplay(file_id,"}");
 				$fclose(file_id);
 			end
 			end
@@ -1616,38 +1897,54 @@ module tb_network
 	*************************************************************************************************************************************/
 
 			if(PACKET_RATE == 5 && traffic_type == 2 && routing_type == 2 && selection_type == 1)begin
-            file_id = $fopen(
-"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_5/t_transpose/r_odd_even/s_random/stats.txt");
 			   
-			if (f_time == `warmup_packets_num*20-1) begin
+			if (f_time == `warmup_packets_num*10-1) begin
 	
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
-				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
-				$fdisplay(file_id,"",);
-				
-				$fdisplay(file_id," -- All packets:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Normal packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Ant packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
-				$fdisplay(file_id,"");
-			
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_5/t_transpose/r_odd_even/s_random/stats.json");
+				$fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+	         $fdisplay(file_id,"   \"throughput\":%g,",f_throughput_o_all);
+	         $fdisplay(file_id,"   \"num_packets_transmitted\":%g,",f_measure_total_i_packet_count_all);
+	         $fdisplay(file_id,"   \"num_packets_received\":%g,",f_measure_total_o_packet_count_all);
+	         $fdisplay(file_id,"   \"average_packet_delay\":%g,",f_average_latency_all);
+	         $fdisplay(file_id,"   \"max_packet_delay\":%g,",f_max_latency_all);
+	         $fdisplay(file_id,"   \"packet.throughput\":%g,",f_throughput_o_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_received\":%g,",f_measure_total_o_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.average_packet_delay\":%g,",f_average_latency_normal);
+	         $fdisplay(file_id,"   \"packet.max_packet_delay\":%g,",f_max_latency_normal);
+	         $fdisplay(file_id,"   \"acopacket.throughput\":%g,",f_throughput_o_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_received\":%g,",f_measure_total_o_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.average_packet_delay\":%g,",f_average_latency_ant);
+	         $fdisplay(file_id,"   \"acopacket.max_packet_delay\":%g",f_max_latency_ant);
+	         $fdisplay(file_id,"}");
+				$fclose(file_id);
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_5/t_transpose/r_odd_even/s_random/config.json");
+            $fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"num_nodes\":%g,",`NODES);
+				$fdisplay(file_id,"   \"warmup_packets\":%g,",WARMUP_PACKETS);
+				$fdisplay(file_id,"   \"measure_packets\":%g,",MEASURE_PACKETS);
+				$fdisplay(file_id,"   \"drain_packets\":%g,",DRAIN_PACKETS);
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+				$fdisplay(file_id,"   \"router_input_queue_depth\":%g,",`INPUT_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"PEnode_input_queue_depth\":%g,",NODE_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"create_ant_packet_period\":%g,",`CREATE_ANT_PERIOD);
+				$fdisplay(file_id,"   \"pheromone_table_value_width\":%g,",`PH_TABLE_DEPTH);
+				$fdisplay(file_id,"   \"result_dir\":\"results/j_10/t_hotspot/r_odd_even/s_aco/\",");
+				$fdisplay(file_id,"   \"routing\":\"odd_even\",");
+				$fdisplay(file_id,"   \"selection\":\"aco\",");
+				$fdisplay(file_id,"   \"traffic\":\"hotspot\",");
+				$fdisplay(file_id,"   \"packet_injection_rate\":%g,",PACKET_RATE);
+				$fdisplay(file_id,"   \"aco_packet_injection_rate\":%g,",ANT_PACKET_RATE);
+				$fdisplay(file_id,"   \"hotspot_packet_injection_rate\":%g",HOTSPOT_PACKET_RATE);
+	         $fdisplay(file_id,"}");
 				$fclose(file_id);
 			end
 			end
@@ -1657,38 +1954,54 @@ module tb_network
 	*************************************************************************************************************************************/
 
 			if(PACKET_RATE == 5 && traffic_type == 2 && routing_type == 2 && selection_type == 2)begin
-            file_id = $fopen(
-"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_5/t_transpose/r_odd_even/s_buffer_level/stats.txt");
 			   
-			if (f_time == `warmup_packets_num*20-1) begin
+			if (f_time == `warmup_packets_num*10-1) begin
 	
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
-				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
-				$fdisplay(file_id,"",);
-				
-				$fdisplay(file_id," -- All packets:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Normal packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Ant packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
-				$fdisplay(file_id,"");
-			
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_5/t_transpose/r_odd_even/s_buffer_level/stats.json");
+				$fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+	         $fdisplay(file_id,"   \"throughput\":%g,",f_throughput_o_all);
+	         $fdisplay(file_id,"   \"num_packets_transmitted\":%g,",f_measure_total_i_packet_count_all);
+	         $fdisplay(file_id,"   \"num_packets_received\":%g,",f_measure_total_o_packet_count_all);
+	         $fdisplay(file_id,"   \"average_packet_delay\":%g,",f_average_latency_all);
+	         $fdisplay(file_id,"   \"max_packet_delay\":%g,",f_max_latency_all);
+	         $fdisplay(file_id,"   \"packet.throughput\":%g,",f_throughput_o_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_received\":%g,",f_measure_total_o_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.average_packet_delay\":%g,",f_average_latency_normal);
+	         $fdisplay(file_id,"   \"packet.max_packet_delay\":%g,",f_max_latency_normal);
+	         $fdisplay(file_id,"   \"acopacket.throughput\":%g,",f_throughput_o_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_received\":%g,",f_measure_total_o_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.average_packet_delay\":%g,",f_average_latency_ant);
+	         $fdisplay(file_id,"   \"acopacket.max_packet_delay\":%g",f_max_latency_ant);
+	         $fdisplay(file_id,"}");
+				$fclose(file_id);
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_5/t_transpose/r_odd_even/s_buffer_level/config.json");
+            $fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"num_nodes\":%g,",`NODES);
+				$fdisplay(file_id,"   \"warmup_packets\":%g,",WARMUP_PACKETS);
+				$fdisplay(file_id,"   \"measure_packets\":%g,",MEASURE_PACKETS);
+				$fdisplay(file_id,"   \"drain_packets\":%g,",DRAIN_PACKETS);
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+				$fdisplay(file_id,"   \"router_input_queue_depth\":%g,",`INPUT_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"PEnode_input_queue_depth\":%g,",NODE_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"create_ant_packet_period\":%g,",`CREATE_ANT_PERIOD);
+				$fdisplay(file_id,"   \"pheromone_table_value_width\":%g,",`PH_TABLE_DEPTH);
+				$fdisplay(file_id,"   \"result_dir\":\"results/j_10/t_hotspot/r_odd_even/s_aco/\",");
+				$fdisplay(file_id,"   \"routing\":\"odd_even\",");
+				$fdisplay(file_id,"   \"selection\":\"aco\",");
+				$fdisplay(file_id,"   \"traffic\":\"hotspot\",");
+				$fdisplay(file_id,"   \"packet_injection_rate\":%g,",PACKET_RATE);
+				$fdisplay(file_id,"   \"aco_packet_injection_rate\":%g,",ANT_PACKET_RATE);
+				$fdisplay(file_id,"   \"hotspot_packet_injection_rate\":%g",HOTSPOT_PACKET_RATE);
+	         $fdisplay(file_id,"}");
 				$fclose(file_id);
 			end
 			end
@@ -1698,38 +2011,54 @@ module tb_network
 	*************************************************************************************************************************************/
 
 			if(PACKET_RATE == 5 && traffic_type == 2 && routing_type == 2 && selection_type == 3)begin
-            file_id = $fopen(
-"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_5/t_transpose/r_odd_even/s_aco/stats.txt");
 			   
-			if (f_time == `warmup_packets_num*20-1) begin
+			if (f_time == `warmup_packets_num*10-1) begin
 	
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
-				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
-				$fdisplay(file_id,"",);
-				
-				$fdisplay(file_id," -- All packets:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Normal packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Ant packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
-				$fdisplay(file_id,"");
-			
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_5/t_transpose/r_odd_even/s_aco/stats.json");
+				$fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+	         $fdisplay(file_id,"   \"throughput\":%g,",f_throughput_o_all);
+	         $fdisplay(file_id,"   \"num_packets_transmitted\":%g,",f_measure_total_i_packet_count_all);
+	         $fdisplay(file_id,"   \"num_packets_received\":%g,",f_measure_total_o_packet_count_all);
+	         $fdisplay(file_id,"   \"average_packet_delay\":%g,",f_average_latency_all);
+	         $fdisplay(file_id,"   \"max_packet_delay\":%g,",f_max_latency_all);
+	         $fdisplay(file_id,"   \"packet.throughput\":%g,",f_throughput_o_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_received\":%g,",f_measure_total_o_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.average_packet_delay\":%g,",f_average_latency_normal);
+	         $fdisplay(file_id,"   \"packet.max_packet_delay\":%g,",f_max_latency_normal);
+	         $fdisplay(file_id,"   \"acopacket.throughput\":%g,",f_throughput_o_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_received\":%g,",f_measure_total_o_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.average_packet_delay\":%g,",f_average_latency_ant);
+	         $fdisplay(file_id,"   \"acopacket.max_packet_delay\":%g",f_max_latency_ant);
+	         $fdisplay(file_id,"}");
+				$fclose(file_id);
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_5/t_transpose/r_odd_even/s_aco/config.json");
+            $fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"num_nodes\":%g,",`NODES);
+				$fdisplay(file_id,"   \"warmup_packets\":%g,",WARMUP_PACKETS);
+				$fdisplay(file_id,"   \"measure_packets\":%g,",MEASURE_PACKETS);
+				$fdisplay(file_id,"   \"drain_packets\":%g,",DRAIN_PACKETS);
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+				$fdisplay(file_id,"   \"router_input_queue_depth\":%g,",`INPUT_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"PEnode_input_queue_depth\":%g,",NODE_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"create_ant_packet_period\":%g,",`CREATE_ANT_PERIOD);
+				$fdisplay(file_id,"   \"pheromone_table_value_width\":%g,",`PH_TABLE_DEPTH);
+				$fdisplay(file_id,"   \"result_dir\":\"results/j_10/t_hotspot/r_odd_even/s_aco/\",");
+				$fdisplay(file_id,"   \"routing\":\"odd_even\",");
+				$fdisplay(file_id,"   \"selection\":\"aco\",");
+				$fdisplay(file_id,"   \"traffic\":\"hotspot\",");
+				$fdisplay(file_id,"   \"packet_injection_rate\":%g,",PACKET_RATE);
+				$fdisplay(file_id,"   \"aco_packet_injection_rate\":%g,",ANT_PACKET_RATE);
+				$fdisplay(file_id,"   \"hotspot_packet_injection_rate\":%g",HOTSPOT_PACKET_RATE);
+	         $fdisplay(file_id,"}");
 				$fclose(file_id);
 			end
 			end
@@ -1738,38 +2067,54 @@ module tb_network
 
 	*************************************************************************************************************************************/
 			if(PACKET_RATE == 5 && traffic_type == 3 && routing_type == 1 && selection_type == 1)begin
-            file_id = $fopen(
-"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_5/t_hotspot/r_xy/s_random/stats.txt");
 			   
-			if (f_time == `warmup_packets_num*20-1) begin
+			if (f_time == `warmup_packets_num*10-1) begin
 	
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
-				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
-				$fdisplay(file_id,"",);
-				
-				$fdisplay(file_id," -- All packets:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Normal packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Ant packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
-				$fdisplay(file_id,"");
-			
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_5/t_hotspot/r_xy/s_random/stats.json");
+				$fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+	         $fdisplay(file_id,"   \"throughput\":%g,",f_throughput_o_all);
+	         $fdisplay(file_id,"   \"num_packets_transmitted\":%g,",f_measure_total_i_packet_count_all);
+	         $fdisplay(file_id,"   \"num_packets_received\":%g,",f_measure_total_o_packet_count_all);
+	         $fdisplay(file_id,"   \"average_packet_delay\":%g,",f_average_latency_all);
+	         $fdisplay(file_id,"   \"max_packet_delay\":%g,",f_max_latency_all);
+	         $fdisplay(file_id,"   \"packet.throughput\":%g,",f_throughput_o_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_received\":%g,",f_measure_total_o_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.average_packet_delay\":%g,",f_average_latency_normal);
+	         $fdisplay(file_id,"   \"packet.max_packet_delay\":%g,",f_max_latency_normal);
+	         $fdisplay(file_id,"   \"acopacket.throughput\":%g,",f_throughput_o_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_received\":%g,",f_measure_total_o_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.average_packet_delay\":%g,",f_average_latency_ant);
+	         $fdisplay(file_id,"   \"acopacket.max_packet_delay\":%g",f_max_latency_ant);
+	         $fdisplay(file_id,"}");
+				$fclose(file_id);
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_5/t_hotspot/r_xy/s_random/config.json");
+            $fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"num_nodes\":%g,",`NODES);
+				$fdisplay(file_id,"   \"warmup_packets\":%g,",WARMUP_PACKETS);
+				$fdisplay(file_id,"   \"measure_packets\":%g,",MEASURE_PACKETS);
+				$fdisplay(file_id,"   \"drain_packets\":%g,",DRAIN_PACKETS);
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+				$fdisplay(file_id,"   \"router_input_queue_depth\":%g,",`INPUT_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"PEnode_input_queue_depth\":%g,",NODE_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"create_ant_packet_period\":%g,",`CREATE_ANT_PERIOD);
+				$fdisplay(file_id,"   \"pheromone_table_value_width\":%g,",`PH_TABLE_DEPTH);
+				$fdisplay(file_id,"   \"result_dir\":\"results/j_10/t_hotspot/r_odd_even/s_aco/\",");
+				$fdisplay(file_id,"   \"routing\":\"odd_even\",");
+				$fdisplay(file_id,"   \"selection\":\"aco\",");
+				$fdisplay(file_id,"   \"traffic\":\"hotspot\",");
+				$fdisplay(file_id,"   \"packet_injection_rate\":%g,",PACKET_RATE);
+				$fdisplay(file_id,"   \"aco_packet_injection_rate\":%g,",ANT_PACKET_RATE);
+				$fdisplay(file_id,"   \"hotspot_packet_injection_rate\":%g",HOTSPOT_PACKET_RATE);
+	         $fdisplay(file_id,"}");
 				$fclose(file_id);
 			end
 			end
@@ -1779,38 +2124,54 @@ module tb_network
 	*************************************************************************************************************************************/
 
 			if(PACKET_RATE == 5 && traffic_type == 3 && routing_type == 2 && selection_type == 1)begin
-            file_id = $fopen(
-"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_5/t_hotspot/r_odd_even/s_random/stats.txt");
 			   
-			if (f_time == `warmup_packets_num*20-1) begin
+			if (f_time == `warmup_packets_num*10-1) begin
 	
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
-				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
-				$fdisplay(file_id,"",);
-				
-				$fdisplay(file_id," -- All packets:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Normal packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Ant packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
-				$fdisplay(file_id,"");
-			
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_5/t_hotspot/r_odd_even/s_random/stats.json");
+				$fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+	         $fdisplay(file_id,"   \"throughput\":%g,",f_throughput_o_all);
+	         $fdisplay(file_id,"   \"num_packets_transmitted\":%g,",f_measure_total_i_packet_count_all);
+	         $fdisplay(file_id,"   \"num_packets_received\":%g,",f_measure_total_o_packet_count_all);
+	         $fdisplay(file_id,"   \"average_packet_delay\":%g,",f_average_latency_all);
+	         $fdisplay(file_id,"   \"max_packet_delay\":%g,",f_max_latency_all);
+	         $fdisplay(file_id,"   \"packet.throughput\":%g,",f_throughput_o_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_received\":%g,",f_measure_total_o_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.average_packet_delay\":%g,",f_average_latency_normal);
+	         $fdisplay(file_id,"   \"packet.max_packet_delay\":%g,",f_max_latency_normal);
+	         $fdisplay(file_id,"   \"acopacket.throughput\":%g,",f_throughput_o_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_received\":%g,",f_measure_total_o_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.average_packet_delay\":%g,",f_average_latency_ant);
+	         $fdisplay(file_id,"   \"acopacket.max_packet_delay\":%g",f_max_latency_ant);
+	         $fdisplay(file_id,"}");
+				$fclose(file_id);
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_5/t_hotspot/r_odd_even/s_random/config.json");
+            $fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"num_nodes\":%g,",`NODES);
+				$fdisplay(file_id,"   \"warmup_packets\":%g,",WARMUP_PACKETS);
+				$fdisplay(file_id,"   \"measure_packets\":%g,",MEASURE_PACKETS);
+				$fdisplay(file_id,"   \"drain_packets\":%g,",DRAIN_PACKETS);
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+				$fdisplay(file_id,"   \"router_input_queue_depth\":%g,",`INPUT_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"PEnode_input_queue_depth\":%g,",NODE_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"create_ant_packet_period\":%g,",`CREATE_ANT_PERIOD);
+				$fdisplay(file_id,"   \"pheromone_table_value_width\":%g,",`PH_TABLE_DEPTH);
+				$fdisplay(file_id,"   \"result_dir\":\"results/j_10/t_hotspot/r_odd_even/s_aco/\",");
+				$fdisplay(file_id,"   \"routing\":\"odd_even\",");
+				$fdisplay(file_id,"   \"selection\":\"aco\",");
+				$fdisplay(file_id,"   \"traffic\":\"hotspot\",");
+				$fdisplay(file_id,"   \"packet_injection_rate\":%g,",PACKET_RATE);
+				$fdisplay(file_id,"   \"aco_packet_injection_rate\":%g,",ANT_PACKET_RATE);
+				$fdisplay(file_id,"   \"hotspot_packet_injection_rate\":%g",HOTSPOT_PACKET_RATE);
+	         $fdisplay(file_id,"}");
 				$fclose(file_id);
 			end
 			end
@@ -1820,38 +2181,54 @@ module tb_network
 	*************************************************************************************************************************************/
 
 			if(PACKET_RATE == 5 && traffic_type == 3 && routing_type == 2 && selection_type == 2)begin
-            file_id = $fopen(
-"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_5/t_hotspot/r_odd_even/s_buffer_level/stats.txt");
 			   
-			if (f_time == `warmup_packets_num*20-1) begin
+			if (f_time == `warmup_packets_num*10-1) begin
 	
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
-				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
-				$fdisplay(file_id,"",);
-				
-				$fdisplay(file_id," -- All packets:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Normal packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Ant packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
-				$fdisplay(file_id,"");
-			
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_5/t_hotspot/r_odd_even/s_buffer_level/stats.json");
+				$fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+	         $fdisplay(file_id,"   \"throughput\":%g,",f_throughput_o_all);
+	         $fdisplay(file_id,"   \"num_packets_transmitted\":%g,",f_measure_total_i_packet_count_all);
+	         $fdisplay(file_id,"   \"num_packets_received\":%g,",f_measure_total_o_packet_count_all);
+	         $fdisplay(file_id,"   \"average_packet_delay\":%g,",f_average_latency_all);
+	         $fdisplay(file_id,"   \"max_packet_delay\":%g,",f_max_latency_all);
+	         $fdisplay(file_id,"   \"packet.throughput\":%g,",f_throughput_o_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_received\":%g,",f_measure_total_o_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.average_packet_delay\":%g,",f_average_latency_normal);
+	         $fdisplay(file_id,"   \"packet.max_packet_delay\":%g,",f_max_latency_normal);
+	         $fdisplay(file_id,"   \"acopacket.throughput\":%g,",f_throughput_o_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_received\":%g,",f_measure_total_o_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.average_packet_delay\":%g,",f_average_latency_ant);
+	         $fdisplay(file_id,"   \"acopacket.max_packet_delay\":%g",f_max_latency_ant);
+	         $fdisplay(file_id,"}");
+				$fclose(file_id);
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_5/t_hotspot/r_odd_even/s_buffer_level/config.json");
+            $fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"num_nodes\":%g,",`NODES);
+				$fdisplay(file_id,"   \"warmup_packets\":%g,",WARMUP_PACKETS);
+				$fdisplay(file_id,"   \"measure_packets\":%g,",MEASURE_PACKETS);
+				$fdisplay(file_id,"   \"drain_packets\":%g,",DRAIN_PACKETS);
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+				$fdisplay(file_id,"   \"router_input_queue_depth\":%g,",`INPUT_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"PEnode_input_queue_depth\":%g,",NODE_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"create_ant_packet_period\":%g,",`CREATE_ANT_PERIOD);
+				$fdisplay(file_id,"   \"pheromone_table_value_width\":%g,",`PH_TABLE_DEPTH);
+				$fdisplay(file_id,"   \"result_dir\":\"results/j_10/t_hotspot/r_odd_even/s_aco/\",");
+				$fdisplay(file_id,"   \"routing\":\"odd_even\",");
+				$fdisplay(file_id,"   \"selection\":\"aco\",");
+				$fdisplay(file_id,"   \"traffic\":\"hotspot\",");
+				$fdisplay(file_id,"   \"packet_injection_rate\":%g,",PACKET_RATE);
+				$fdisplay(file_id,"   \"aco_packet_injection_rate\":%g,",ANT_PACKET_RATE);
+				$fdisplay(file_id,"   \"hotspot_packet_injection_rate\":%g",HOTSPOT_PACKET_RATE);
+	         $fdisplay(file_id,"}");
 				$fclose(file_id);
 			end
 			end
@@ -1861,38 +2238,54 @@ module tb_network
 	*************************************************************************************************************************************/
 
 			if(PACKET_RATE == 5 && traffic_type == 3 && routing_type == 2 && selection_type == 3)begin
-            file_id = $fopen(
-"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_5/t_hotspot/r_odd_even/s_aco/stats.txt");
 			   
-			if (f_time == `warmup_packets_num*20-1) begin
+			if (f_time == `warmup_packets_num*10-1) begin
 	
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
-				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
-				$fdisplay(file_id,"",);
-				
-				$fdisplay(file_id," -- All packets:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Normal packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Ant packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
-				$fdisplay(file_id,"");
-			
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_5/t_hotspot/r_odd_even/s_aco/stats.json");
+				$fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+	         $fdisplay(file_id,"   \"throughput\":%g,",f_throughput_o_all);
+	         $fdisplay(file_id,"   \"num_packets_transmitted\":%g,",f_measure_total_i_packet_count_all);
+	         $fdisplay(file_id,"   \"num_packets_received\":%g,",f_measure_total_o_packet_count_all);
+	         $fdisplay(file_id,"   \"average_packet_delay\":%g,",f_average_latency_all);
+	         $fdisplay(file_id,"   \"max_packet_delay\":%g,",f_max_latency_all);
+	         $fdisplay(file_id,"   \"packet.throughput\":%g,",f_throughput_o_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_received\":%g,",f_measure_total_o_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.average_packet_delay\":%g,",f_average_latency_normal);
+	         $fdisplay(file_id,"   \"packet.max_packet_delay\":%g,",f_max_latency_normal);
+	         $fdisplay(file_id,"   \"acopacket.throughput\":%g,",f_throughput_o_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_received\":%g,",f_measure_total_o_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.average_packet_delay\":%g,",f_average_latency_ant);
+	         $fdisplay(file_id,"   \"acopacket.max_packet_delay\":%g",f_max_latency_ant);
+	         $fdisplay(file_id,"}");
+				$fclose(file_id);
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_5/t_hotspot/r_odd_even/s_aco/config.json");
+            $fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"num_nodes\":%g,",`NODES);
+				$fdisplay(file_id,"   \"warmup_packets\":%g,",WARMUP_PACKETS);
+				$fdisplay(file_id,"   \"measure_packets\":%g,",MEASURE_PACKETS);
+				$fdisplay(file_id,"   \"drain_packets\":%g,",DRAIN_PACKETS);
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+				$fdisplay(file_id,"   \"router_input_queue_depth\":%g,",`INPUT_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"PEnode_input_queue_depth\":%g,",NODE_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"create_ant_packet_period\":%g,",`CREATE_ANT_PERIOD);
+				$fdisplay(file_id,"   \"pheromone_table_value_width\":%g,",`PH_TABLE_DEPTH);
+				$fdisplay(file_id,"   \"result_dir\":\"results/j_10/t_hotspot/r_odd_even/s_aco/\",");
+				$fdisplay(file_id,"   \"routing\":\"odd_even\",");
+				$fdisplay(file_id,"   \"selection\":\"aco\",");
+				$fdisplay(file_id,"   \"traffic\":\"hotspot\",");
+				$fdisplay(file_id,"   \"packet_injection_rate\":%g,",PACKET_RATE);
+				$fdisplay(file_id,"   \"aco_packet_injection_rate\":%g,",ANT_PACKET_RATE);
+				$fdisplay(file_id,"   \"hotspot_packet_injection_rate\":%g",HOTSPOT_PACKET_RATE);
+	         $fdisplay(file_id,"}");
 				$fclose(file_id);
 			end
 			end
@@ -1907,38 +2300,54 @@ module tb_network
 
 	*************************************************************************************************************************************/
 			if(PACKET_RATE == 10 && traffic_type == 1 && routing_type == 1 && selection_type == 1)begin
-            file_id = $fopen(
-"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_10/t_uniform/r_xy/s_random/stats.txt");
 			   
-			if (f_time == `warmup_packets_num*20-1) begin
+			if (f_time == `warmup_packets_num*10-1) begin
 	
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
-				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
-				$fdisplay(file_id,"",);
-				
-				$fdisplay(file_id," -- All packets:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Normal packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Ant packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
-				$fdisplay(file_id,"");
-			
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_10/t_uniform/r_xy/s_random/stats.json");
+				$fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+	         $fdisplay(file_id,"   \"throughput\":%g,",f_throughput_o_all);
+	         $fdisplay(file_id,"   \"num_packets_transmitted\":%g,",f_measure_total_i_packet_count_all);
+	         $fdisplay(file_id,"   \"num_packets_received\":%g,",f_measure_total_o_packet_count_all);
+	         $fdisplay(file_id,"   \"average_packet_delay\":%g,",f_average_latency_all);
+	         $fdisplay(file_id,"   \"max_packet_delay\":%g,",f_max_latency_all);
+	         $fdisplay(file_id,"   \"packet.throughput\":%g,",f_throughput_o_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_received\":%g,",f_measure_total_o_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.average_packet_delay\":%g,",f_average_latency_normal);
+	         $fdisplay(file_id,"   \"packet.max_packet_delay\":%g,",f_max_latency_normal);
+	         $fdisplay(file_id,"   \"acopacket.throughput\":%g,",f_throughput_o_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_received\":%g,",f_measure_total_o_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.average_packet_delay\":%g,",f_average_latency_ant);
+	         $fdisplay(file_id,"   \"acopacket.max_packet_delay\":%g",f_max_latency_ant);
+	         $fdisplay(file_id,"}");
+				$fclose(file_id);
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_10/t_uniform/r_xy/s_random/config.json");
+            $fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"num_nodes\":%g,",`NODES);
+				$fdisplay(file_id,"   \"warmup_packets\":%g,",WARMUP_PACKETS);
+				$fdisplay(file_id,"   \"measure_packets\":%g,",MEASURE_PACKETS);
+				$fdisplay(file_id,"   \"drain_packets\":%g,",DRAIN_PACKETS);
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+				$fdisplay(file_id,"   \"router_input_queue_depth\":%g,",`INPUT_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"PEnode_input_queue_depth\":%g,",NODE_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"create_ant_packet_period\":%g,",`CREATE_ANT_PERIOD);
+				$fdisplay(file_id,"   \"pheromone_table_value_width\":%g,",`PH_TABLE_DEPTH);
+				$fdisplay(file_id,"   \"result_dir\":\"results/j_10/t_hotspot/r_odd_even/s_aco/\",");
+				$fdisplay(file_id,"   \"routing\":\"odd_even\",");
+				$fdisplay(file_id,"   \"selection\":\"aco\",");
+				$fdisplay(file_id,"   \"traffic\":\"hotspot\",");
+				$fdisplay(file_id,"   \"packet_injection_rate\":%g,",PACKET_RATE);
+				$fdisplay(file_id,"   \"aco_packet_injection_rate\":%g,",ANT_PACKET_RATE);
+				$fdisplay(file_id,"   \"hotspot_packet_injection_rate\":%g",HOTSPOT_PACKET_RATE);
+	         $fdisplay(file_id,"}");
 				$fclose(file_id);
 			end
 			end
@@ -1948,38 +2357,54 @@ module tb_network
 	*************************************************************************************************************************************/
 
 			if(PACKET_RATE == 10 && traffic_type == 1 && routing_type == 2 && selection_type == 1)begin
-            file_id = $fopen(
-"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_10/t_uniform/r_odd_even/s_random/stats.txt");
 			   
-			if (f_time == `warmup_packets_num*20-1) begin
+			if (f_time == `warmup_packets_num*10-1) begin
 	
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
-				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
-				$fdisplay(file_id,"",);
-				
-				$fdisplay(file_id," -- All packets:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Normal packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Ant packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
-				$fdisplay(file_id,"");
-			
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_10/t_uniform/r_odd_even/s_random/stats.json");
+				$fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+	         $fdisplay(file_id,"   \"throughput\":%g,",f_throughput_o_all);
+	         $fdisplay(file_id,"   \"num_packets_transmitted\":%g,",f_measure_total_i_packet_count_all);
+	         $fdisplay(file_id,"   \"num_packets_received\":%g,",f_measure_total_o_packet_count_all);
+	         $fdisplay(file_id,"   \"average_packet_delay\":%g,",f_average_latency_all);
+	         $fdisplay(file_id,"   \"max_packet_delay\":%g,",f_max_latency_all);
+	         $fdisplay(file_id,"   \"packet.throughput\":%g,",f_throughput_o_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_received\":%g,",f_measure_total_o_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.average_packet_delay\":%g,",f_average_latency_normal);
+	         $fdisplay(file_id,"   \"packet.max_packet_delay\":%g,",f_max_latency_normal);
+	         $fdisplay(file_id,"   \"acopacket.throughput\":%g,",f_throughput_o_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_received\":%g,",f_measure_total_o_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.average_packet_delay\":%g,",f_average_latency_ant);
+	         $fdisplay(file_id,"   \"acopacket.max_packet_delay\":%g",f_max_latency_ant);
+	         $fdisplay(file_id,"}");
+				$fclose(file_id);
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_10/t_uniform/r_odd_even/s_random/config.json");
+            $fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"num_nodes\":%g,",`NODES);
+				$fdisplay(file_id,"   \"warmup_packets\":%g,",WARMUP_PACKETS);
+				$fdisplay(file_id,"   \"measure_packets\":%g,",MEASURE_PACKETS);
+				$fdisplay(file_id,"   \"drain_packets\":%g,",DRAIN_PACKETS);
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+				$fdisplay(file_id,"   \"router_input_queue_depth\":%g,",`INPUT_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"PEnode_input_queue_depth\":%g,",NODE_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"create_ant_packet_period\":%g,",`CREATE_ANT_PERIOD);
+				$fdisplay(file_id,"   \"pheromone_table_value_width\":%g,",`PH_TABLE_DEPTH);
+				$fdisplay(file_id,"   \"result_dir\":\"results/j_10/t_hotspot/r_odd_even/s_aco/\",");
+				$fdisplay(file_id,"   \"routing\":\"odd_even\",");
+				$fdisplay(file_id,"   \"selection\":\"aco\",");
+				$fdisplay(file_id,"   \"traffic\":\"hotspot\",");
+				$fdisplay(file_id,"   \"packet_injection_rate\":%g,",PACKET_RATE);
+				$fdisplay(file_id,"   \"aco_packet_injection_rate\":%g,",ANT_PACKET_RATE);
+				$fdisplay(file_id,"   \"hotspot_packet_injection_rate\":%g",HOTSPOT_PACKET_RATE);
+	         $fdisplay(file_id,"}");
 				$fclose(file_id);
 			end
 			end
@@ -1989,38 +2414,54 @@ module tb_network
 	*************************************************************************************************************************************/
 
 			if(PACKET_RATE == 10 && traffic_type == 1 && routing_type == 2 && selection_type == 2)begin
-            file_id = $fopen(
-"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_10/t_uniform/r_odd_even/s_buffer_level/stats.txt");
 			   
-			if (f_time == `warmup_packets_num*20-1) begin
+			if (f_time == `warmup_packets_num*10-1) begin
 	
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
-				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
-				$fdisplay(file_id,"",);
-				
-				$fdisplay(file_id," -- All packets:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Normal packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Ant packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
-				$fdisplay(file_id,"");
-			
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_10/t_uniform/r_odd_even/s_buffer_level/stats.json");
+				$fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+	         $fdisplay(file_id,"   \"throughput\":%g,",f_throughput_o_all);
+	         $fdisplay(file_id,"   \"num_packets_transmitted\":%g,",f_measure_total_i_packet_count_all);
+	         $fdisplay(file_id,"   \"num_packets_received\":%g,",f_measure_total_o_packet_count_all);
+	         $fdisplay(file_id,"   \"average_packet_delay\":%g,",f_average_latency_all);
+	         $fdisplay(file_id,"   \"max_packet_delay\":%g,",f_max_latency_all);
+	         $fdisplay(file_id,"   \"packet.throughput\":%g,",f_throughput_o_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_received\":%g,",f_measure_total_o_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.average_packet_delay\":%g,",f_average_latency_normal);
+	         $fdisplay(file_id,"   \"packet.max_packet_delay\":%g,",f_max_latency_normal);
+	         $fdisplay(file_id,"   \"acopacket.throughput\":%g,",f_throughput_o_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_received\":%g,",f_measure_total_o_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.average_packet_delay\":%g,",f_average_latency_ant);
+	         $fdisplay(file_id,"   \"acopacket.max_packet_delay\":%g",f_max_latency_ant);
+	         $fdisplay(file_id,"}");
+				$fclose(file_id);
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_10/t_uniform/r_odd_even/s_buffer_level/config.json");
+            $fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"num_nodes\":%g,",`NODES);
+				$fdisplay(file_id,"   \"warmup_packets\":%g,",WARMUP_PACKETS);
+				$fdisplay(file_id,"   \"measure_packets\":%g,",MEASURE_PACKETS);
+				$fdisplay(file_id,"   \"drain_packets\":%g,",DRAIN_PACKETS);
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+				$fdisplay(file_id,"   \"router_input_queue_depth\":%g,",`INPUT_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"PEnode_input_queue_depth\":%g,",NODE_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"create_ant_packet_period\":%g,",`CREATE_ANT_PERIOD);
+				$fdisplay(file_id,"   \"pheromone_table_value_width\":%g,",`PH_TABLE_DEPTH);
+				$fdisplay(file_id,"   \"result_dir\":\"results/j_10/t_hotspot/r_odd_even/s_aco/\",");
+				$fdisplay(file_id,"   \"routing\":\"odd_even\",");
+				$fdisplay(file_id,"   \"selection\":\"aco\",");
+				$fdisplay(file_id,"   \"traffic\":\"hotspot\",");
+				$fdisplay(file_id,"   \"packet_injection_rate\":%g,",PACKET_RATE);
+				$fdisplay(file_id,"   \"aco_packet_injection_rate\":%g,",ANT_PACKET_RATE);
+				$fdisplay(file_id,"   \"hotspot_packet_injection_rate\":%g",HOTSPOT_PACKET_RATE);
+	         $fdisplay(file_id,"}");
 				$fclose(file_id);
 			end
 			end
@@ -2030,38 +2471,54 @@ module tb_network
 	*************************************************************************************************************************************/
 
 			if(PACKET_RATE == 10 && traffic_type == 1 && routing_type == 2 && selection_type == 3)begin
-            file_id = $fopen(
-"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_10/t_uniform/r_odd_even/s_aco/stats.txt");
 			   
-			if (f_time == `warmup_packets_num*20-1) begin
+			if (f_time == `warmup_packets_num*10-1) begin
 	
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
-				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
-				$fdisplay(file_id,"",);
-				
-				$fdisplay(file_id," -- All packets:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Normal packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Ant packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
-				$fdisplay(file_id,"");
-			
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_10/t_uniform/r_odd_even/s_aco/stats.json");
+				$fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+	         $fdisplay(file_id,"   \"throughput\":%g,",f_throughput_o_all);
+	         $fdisplay(file_id,"   \"num_packets_transmitted\":%g,",f_measure_total_i_packet_count_all);
+	         $fdisplay(file_id,"   \"num_packets_received\":%g,",f_measure_total_o_packet_count_all);
+	         $fdisplay(file_id,"   \"average_packet_delay\":%g,",f_average_latency_all);
+	         $fdisplay(file_id,"   \"max_packet_delay\":%g,",f_max_latency_all);
+	         $fdisplay(file_id,"   \"packet.throughput\":%g,",f_throughput_o_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_received\":%g,",f_measure_total_o_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.average_packet_delay\":%g,",f_average_latency_normal);
+	         $fdisplay(file_id,"   \"packet.max_packet_delay\":%g,",f_max_latency_normal);
+	         $fdisplay(file_id,"   \"acopacket.throughput\":%g,",f_throughput_o_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_received\":%g,",f_measure_total_o_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.average_packet_delay\":%g,",f_average_latency_ant);
+	         $fdisplay(file_id,"   \"acopacket.max_packet_delay\":%g",f_max_latency_ant);
+	         $fdisplay(file_id,"}");
+				$fclose(file_id);
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_10/t_uniform/r_odd_even/s_aco/config.json");
+            $fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"num_nodes\":%g,",`NODES);
+				$fdisplay(file_id,"   \"warmup_packets\":%g,",WARMUP_PACKETS);
+				$fdisplay(file_id,"   \"measure_packets\":%g,",MEASURE_PACKETS);
+				$fdisplay(file_id,"   \"drain_packets\":%g,",DRAIN_PACKETS);
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+				$fdisplay(file_id,"   \"router_input_queue_depth\":%g,",`INPUT_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"PEnode_input_queue_depth\":%g,",NODE_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"create_ant_packet_period\":%g,",`CREATE_ANT_PERIOD);
+				$fdisplay(file_id,"   \"pheromone_table_value_width\":%g,",`PH_TABLE_DEPTH);
+				$fdisplay(file_id,"   \"result_dir\":\"results/j_10/t_hotspot/r_odd_even/s_aco/\",");
+				$fdisplay(file_id,"   \"routing\":\"odd_even\",");
+				$fdisplay(file_id,"   \"selection\":\"aco\",");
+				$fdisplay(file_id,"   \"traffic\":\"hotspot\",");
+				$fdisplay(file_id,"   \"packet_injection_rate\":%g,",PACKET_RATE);
+				$fdisplay(file_id,"   \"aco_packet_injection_rate\":%g,",ANT_PACKET_RATE);
+				$fdisplay(file_id,"   \"hotspot_packet_injection_rate\":%g",HOTSPOT_PACKET_RATE);
+	         $fdisplay(file_id,"}");
 				$fclose(file_id);
 			end
 			end
@@ -2070,38 +2527,54 @@ module tb_network
 
 	*************************************************************************************************************************************/
 			if(PACKET_RATE == 10 && traffic_type == 2 && routing_type == 1 && selection_type == 1)begin
-            file_id = $fopen(
-"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_10/t_transpose/r_xy/s_random/stats.txt");
 			   
-			if (f_time == `warmup_packets_num*20-1) begin
+			if (f_time == `warmup_packets_num*10-1) begin
 	
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
-				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
-				$fdisplay(file_id,"",);
-				
-				$fdisplay(file_id," -- All packets:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Normal packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Ant packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
-				$fdisplay(file_id,"");
-			
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_10/t_transpose/r_xy/s_random/stats.json");
+				$fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+	         $fdisplay(file_id,"   \"throughput\":%g,",f_throughput_o_all);
+	         $fdisplay(file_id,"   \"num_packets_transmitted\":%g,",f_measure_total_i_packet_count_all);
+	         $fdisplay(file_id,"   \"num_packets_received\":%g,",f_measure_total_o_packet_count_all);
+	         $fdisplay(file_id,"   \"average_packet_delay\":%g,",f_average_latency_all);
+	         $fdisplay(file_id,"   \"max_packet_delay\":%g,",f_max_latency_all);
+	         $fdisplay(file_id,"   \"packet.throughput\":%g,",f_throughput_o_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_received\":%g,",f_measure_total_o_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.average_packet_delay\":%g,",f_average_latency_normal);
+	         $fdisplay(file_id,"   \"packet.max_packet_delay\":%g,",f_max_latency_normal);
+	         $fdisplay(file_id,"   \"acopacket.throughput\":%g,",f_throughput_o_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_received\":%g,",f_measure_total_o_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.average_packet_delay\":%g,",f_average_latency_ant);
+	         $fdisplay(file_id,"   \"acopacket.max_packet_delay\":%g",f_max_latency_ant);
+	         $fdisplay(file_id,"}");
+				$fclose(file_id);
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_10/t_transpose/r_xy/s_random/config.json");
+            $fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"num_nodes\":%g,",`NODES);
+				$fdisplay(file_id,"   \"warmup_packets\":%g,",WARMUP_PACKETS);
+				$fdisplay(file_id,"   \"measure_packets\":%g,",MEASURE_PACKETS);
+				$fdisplay(file_id,"   \"drain_packets\":%g,",DRAIN_PACKETS);
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+				$fdisplay(file_id,"   \"router_input_queue_depth\":%g,",`INPUT_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"PEnode_input_queue_depth\":%g,",NODE_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"create_ant_packet_period\":%g,",`CREATE_ANT_PERIOD);
+				$fdisplay(file_id,"   \"pheromone_table_value_width\":%g,",`PH_TABLE_DEPTH);
+				$fdisplay(file_id,"   \"result_dir\":\"results/j_10/t_hotspot/r_odd_even/s_aco/\",");
+				$fdisplay(file_id,"   \"routing\":\"odd_even\",");
+				$fdisplay(file_id,"   \"selection\":\"aco\",");
+				$fdisplay(file_id,"   \"traffic\":\"hotspot\",");
+				$fdisplay(file_id,"   \"packet_injection_rate\":%g,",PACKET_RATE);
+				$fdisplay(file_id,"   \"aco_packet_injection_rate\":%g,",ANT_PACKET_RATE);
+				$fdisplay(file_id,"   \"hotspot_packet_injection_rate\":%g",HOTSPOT_PACKET_RATE);
+	         $fdisplay(file_id,"}");
 				$fclose(file_id);
 			end
 			end
@@ -2111,38 +2584,54 @@ module tb_network
 	*************************************************************************************************************************************/
 
 			if(PACKET_RATE == 10 && traffic_type == 2 && routing_type == 2 && selection_type == 1)begin
-            file_id = $fopen(
-"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_10/t_transpose/r_odd_even/s_random/stats.txt");
 			   
-			if (f_time == `warmup_packets_num*20-1) begin
+			if (f_time == `warmup_packets_num*10-1) begin
 	
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
-				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
-				$fdisplay(file_id,"",);
-				
-				$fdisplay(file_id," -- All packets:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Normal packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Ant packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
-				$fdisplay(file_id,"");
-			
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_10/t_transpose/r_odd_even/s_random/stats.json");
+				$fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+	         $fdisplay(file_id,"   \"throughput\":%g,",f_throughput_o_all);
+	         $fdisplay(file_id,"   \"num_packets_transmitted\":%g,",f_measure_total_i_packet_count_all);
+	         $fdisplay(file_id,"   \"num_packets_received\":%g,",f_measure_total_o_packet_count_all);
+	         $fdisplay(file_id,"   \"average_packet_delay\":%g,",f_average_latency_all);
+	         $fdisplay(file_id,"   \"max_packet_delay\":%g,",f_max_latency_all);
+	         $fdisplay(file_id,"   \"packet.throughput\":%g,",f_throughput_o_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_received\":%g,",f_measure_total_o_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.average_packet_delay\":%g,",f_average_latency_normal);
+	         $fdisplay(file_id,"   \"packet.max_packet_delay\":%g,",f_max_latency_normal);
+	         $fdisplay(file_id,"   \"acopacket.throughput\":%g,",f_throughput_o_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_received\":%g,",f_measure_total_o_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.average_packet_delay\":%g,",f_average_latency_ant);
+	         $fdisplay(file_id,"   \"acopacket.max_packet_delay\":%g",f_max_latency_ant);
+	         $fdisplay(file_id,"}");
+				$fclose(file_id);
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_10/t_transpose/r_odd_even/s_random/config.json");
+            $fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"num_nodes\":%g,",`NODES);
+				$fdisplay(file_id,"   \"warmup_packets\":%g,",WARMUP_PACKETS);
+				$fdisplay(file_id,"   \"measure_packets\":%g,",MEASURE_PACKETS);
+				$fdisplay(file_id,"   \"drain_packets\":%g,",DRAIN_PACKETS);
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+				$fdisplay(file_id,"   \"router_input_queue_depth\":%g,",`INPUT_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"PEnode_input_queue_depth\":%g,",NODE_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"create_ant_packet_period\":%g,",`CREATE_ANT_PERIOD);
+				$fdisplay(file_id,"   \"pheromone_table_value_width\":%g,",`PH_TABLE_DEPTH);
+				$fdisplay(file_id,"   \"result_dir\":\"results/j_10/t_hotspot/r_odd_even/s_aco/\",");
+				$fdisplay(file_id,"   \"routing\":\"odd_even\",");
+				$fdisplay(file_id,"   \"selection\":\"aco\",");
+				$fdisplay(file_id,"   \"traffic\":\"hotspot\",");
+				$fdisplay(file_id,"   \"packet_injection_rate\":%g,",PACKET_RATE);
+				$fdisplay(file_id,"   \"aco_packet_injection_rate\":%g,",ANT_PACKET_RATE);
+				$fdisplay(file_id,"   \"hotspot_packet_injection_rate\":%g",HOTSPOT_PACKET_RATE);
+	         $fdisplay(file_id,"}");
 				$fclose(file_id);
 			end
 			end
@@ -2152,38 +2641,54 @@ module tb_network
 	*************************************************************************************************************************************/
 
 			if(PACKET_RATE == 10 && traffic_type == 2 && routing_type == 2 && selection_type == 2)begin
-            file_id = $fopen(
-"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_10/t_transpose/r_odd_even/s_buffer_level/stats.txt");
 			   
-			if (f_time == `warmup_packets_num*20-1) begin
+			if (f_time == `warmup_packets_num*10-1) begin
 	
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
-				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
-				$fdisplay(file_id,"",);
-				
-				$fdisplay(file_id," -- All packets:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Normal packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Ant packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
-				$fdisplay(file_id,"");
-			
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_10/t_transpose/r_odd_even/s_buffer_level/stats.json");
+				$fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+	         $fdisplay(file_id,"   \"throughput\":%g,",f_throughput_o_all);
+	         $fdisplay(file_id,"   \"num_packets_transmitted\":%g,",f_measure_total_i_packet_count_all);
+	         $fdisplay(file_id,"   \"num_packets_received\":%g,",f_measure_total_o_packet_count_all);
+	         $fdisplay(file_id,"   \"average_packet_delay\":%g,",f_average_latency_all);
+	         $fdisplay(file_id,"   \"max_packet_delay\":%g,",f_max_latency_all);
+	         $fdisplay(file_id,"   \"packet.throughput\":%g,",f_throughput_o_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_received\":%g,",f_measure_total_o_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.average_packet_delay\":%g,",f_average_latency_normal);
+	         $fdisplay(file_id,"   \"packet.max_packet_delay\":%g,",f_max_latency_normal);
+	         $fdisplay(file_id,"   \"acopacket.throughput\":%g,",f_throughput_o_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_received\":%g,",f_measure_total_o_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.average_packet_delay\":%g,",f_average_latency_ant);
+	         $fdisplay(file_id,"   \"acopacket.max_packet_delay\":%g",f_max_latency_ant);
+	         $fdisplay(file_id,"}");
+				$fclose(file_id);
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_10/t_transpose/r_odd_even/s_buffer_level/config.json");
+            $fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"num_nodes\":%g,",`NODES);
+				$fdisplay(file_id,"   \"warmup_packets\":%g,",WARMUP_PACKETS);
+				$fdisplay(file_id,"   \"measure_packets\":%g,",MEASURE_PACKETS);
+				$fdisplay(file_id,"   \"drain_packets\":%g,",DRAIN_PACKETS);
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+				$fdisplay(file_id,"   \"router_input_queue_depth\":%g,",`INPUT_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"PEnode_input_queue_depth\":%g,",NODE_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"create_ant_packet_period\":%g,",`CREATE_ANT_PERIOD);
+				$fdisplay(file_id,"   \"pheromone_table_value_width\":%g,",`PH_TABLE_DEPTH);
+				$fdisplay(file_id,"   \"result_dir\":\"results/j_10/t_hotspot/r_odd_even/s_aco/\",");
+				$fdisplay(file_id,"   \"routing\":\"odd_even\",");
+				$fdisplay(file_id,"   \"selection\":\"aco\",");
+				$fdisplay(file_id,"   \"traffic\":\"hotspot\",");
+				$fdisplay(file_id,"   \"packet_injection_rate\":%g,",PACKET_RATE);
+				$fdisplay(file_id,"   \"aco_packet_injection_rate\":%g,",ANT_PACKET_RATE);
+				$fdisplay(file_id,"   \"hotspot_packet_injection_rate\":%g",HOTSPOT_PACKET_RATE);
+	         $fdisplay(file_id,"}");
 				$fclose(file_id);
 			end
 			end
@@ -2193,38 +2698,54 @@ module tb_network
 	*************************************************************************************************************************************/
 
 			if(PACKET_RATE == 10 && traffic_type == 2 && routing_type == 2 && selection_type == 3)begin
-            file_id = $fopen(
-"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_10/t_transpose/r_odd_even/s_aco/stats.txt");
 			   
-			if (f_time == `warmup_packets_num*20-1) begin
+			if (f_time == `warmup_packets_num*10-1) begin
 	
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
-				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
-				$fdisplay(file_id,"",);
-				
-				$fdisplay(file_id," -- All packets:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Normal packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Ant packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
-				$fdisplay(file_id,"");
-			
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_10/t_transpose/r_odd_even/s_aco/stats.json");
+				$fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+	         $fdisplay(file_id,"   \"throughput\":%g,",f_throughput_o_all);
+	         $fdisplay(file_id,"   \"num_packets_transmitted\":%g,",f_measure_total_i_packet_count_all);
+	         $fdisplay(file_id,"   \"num_packets_received\":%g,",f_measure_total_o_packet_count_all);
+	         $fdisplay(file_id,"   \"average_packet_delay\":%g,",f_average_latency_all);
+	         $fdisplay(file_id,"   \"max_packet_delay\":%g,",f_max_latency_all);
+	         $fdisplay(file_id,"   \"packet.throughput\":%g,",f_throughput_o_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_received\":%g,",f_measure_total_o_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.average_packet_delay\":%g,",f_average_latency_normal);
+	         $fdisplay(file_id,"   \"packet.max_packet_delay\":%g,",f_max_latency_normal);
+	         $fdisplay(file_id,"   \"acopacket.throughput\":%g,",f_throughput_o_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_received\":%g,",f_measure_total_o_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.average_packet_delay\":%g,",f_average_latency_ant);
+	         $fdisplay(file_id,"   \"acopacket.max_packet_delay\":%g",f_max_latency_ant);
+	         $fdisplay(file_id,"}");
+				$fclose(file_id);
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_10/t_transpose/r_odd_even/s_aco/config.json");
+            $fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"num_nodes\":%g,",`NODES);
+				$fdisplay(file_id,"   \"warmup_packets\":%g,",WARMUP_PACKETS);
+				$fdisplay(file_id,"   \"measure_packets\":%g,",MEASURE_PACKETS);
+				$fdisplay(file_id,"   \"drain_packets\":%g,",DRAIN_PACKETS);
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+				$fdisplay(file_id,"   \"router_input_queue_depth\":%g,",`INPUT_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"PEnode_input_queue_depth\":%g,",NODE_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"create_ant_packet_period\":%g,",`CREATE_ANT_PERIOD);
+				$fdisplay(file_id,"   \"pheromone_table_value_width\":%g,",`PH_TABLE_DEPTH);
+				$fdisplay(file_id,"   \"result_dir\":\"results/j_10/t_hotspot/r_odd_even/s_aco/\",");
+				$fdisplay(file_id,"   \"routing\":\"odd_even\",");
+				$fdisplay(file_id,"   \"selection\":\"aco\",");
+				$fdisplay(file_id,"   \"traffic\":\"hotspot\",");
+				$fdisplay(file_id,"   \"packet_injection_rate\":%g,",PACKET_RATE);
+				$fdisplay(file_id,"   \"aco_packet_injection_rate\":%g,",ANT_PACKET_RATE);
+				$fdisplay(file_id,"   \"hotspot_packet_injection_rate\":%g",HOTSPOT_PACKET_RATE);
+	         $fdisplay(file_id,"}");
 				$fclose(file_id);
 			end
 			end
@@ -2233,38 +2754,54 @@ module tb_network
 
 	*************************************************************************************************************************************/
 			if(PACKET_RATE == 10 && traffic_type == 3 && routing_type == 1 && selection_type == 1)begin
-            file_id = $fopen(
-"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_10/t_hotspot/r_xy/s_random/stats.txt");
 			   
-			if (f_time == `warmup_packets_num*20-1) begin
+			if (f_time == `warmup_packets_num*10-1) begin
 	
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
-				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
-				$fdisplay(file_id,"",);
-				
-				$fdisplay(file_id," -- All packets:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Normal packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Ant packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
-				$fdisplay(file_id,"");
-			
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_10/t_hotspot/r_xy/s_random/stats.json");
+				$fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+	         $fdisplay(file_id,"   \"throughput\":%g,",f_throughput_o_all);
+	         $fdisplay(file_id,"   \"num_packets_transmitted\":%g,",f_measure_total_i_packet_count_all);
+	         $fdisplay(file_id,"   \"num_packets_received\":%g,",f_measure_total_o_packet_count_all);
+	         $fdisplay(file_id,"   \"average_packet_delay\":%g,",f_average_latency_all);
+	         $fdisplay(file_id,"   \"max_packet_delay\":%g,",f_max_latency_all);
+	         $fdisplay(file_id,"   \"packet.throughput\":%g,",f_throughput_o_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_received\":%g,",f_measure_total_o_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.average_packet_delay\":%g,",f_average_latency_normal);
+	         $fdisplay(file_id,"   \"packet.max_packet_delay\":%g,",f_max_latency_normal);
+	         $fdisplay(file_id,"   \"acopacket.throughput\":%g,",f_throughput_o_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_received\":%g,",f_measure_total_o_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.average_packet_delay\":%g,",f_average_latency_ant);
+	         $fdisplay(file_id,"   \"acopacket.max_packet_delay\":%g",f_max_latency_ant);
+	         $fdisplay(file_id,"}");
+				$fclose(file_id);
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_10/t_hotspot/r_xy/s_random/config.json");
+            $fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"num_nodes\":%g,",`NODES);
+				$fdisplay(file_id,"   \"warmup_packets\":%g,",WARMUP_PACKETS);
+				$fdisplay(file_id,"   \"measure_packets\":%g,",MEASURE_PACKETS);
+				$fdisplay(file_id,"   \"drain_packets\":%g,",DRAIN_PACKETS);
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+				$fdisplay(file_id,"   \"router_input_queue_depth\":%g,",`INPUT_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"PEnode_input_queue_depth\":%g,",NODE_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"create_ant_packet_period\":%g,",`CREATE_ANT_PERIOD);
+				$fdisplay(file_id,"   \"pheromone_table_value_width\":%g,",`PH_TABLE_DEPTH);
+				$fdisplay(file_id,"   \"result_dir\":\"results/j_10/t_hotspot/r_odd_even/s_aco/\",");
+				$fdisplay(file_id,"   \"routing\":\"odd_even\",");
+				$fdisplay(file_id,"   \"selection\":\"aco\",");
+				$fdisplay(file_id,"   \"traffic\":\"hotspot\",");
+				$fdisplay(file_id,"   \"packet_injection_rate\":%g,",PACKET_RATE);
+				$fdisplay(file_id,"   \"aco_packet_injection_rate\":%g,",ANT_PACKET_RATE);
+				$fdisplay(file_id,"   \"hotspot_packet_injection_rate\":%g",HOTSPOT_PACKET_RATE);
+	         $fdisplay(file_id,"}");
 				$fclose(file_id);
 			end
 			end
@@ -2274,38 +2811,54 @@ module tb_network
 	*************************************************************************************************************************************/
 
 			if(PACKET_RATE == 10 && traffic_type == 3 && routing_type == 2 && selection_type == 1)begin
-            file_id = $fopen(
-"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_10/t_hotspot/r_odd_even/s_random/stats.txt");
 			   
-			if (f_time == `warmup_packets_num*20-1) begin
+			if (f_time == `warmup_packets_num*10-1) begin
 	
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
-				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
-				$fdisplay(file_id,"",);
-				
-				$fdisplay(file_id," -- All packets:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Normal packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Ant packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
-				$fdisplay(file_id,"");
-			
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_10/t_hotspot/r_odd_even/s_random/stats.json");
+				$fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+	         $fdisplay(file_id,"   \"throughput\":%g,",f_throughput_o_all);
+	         $fdisplay(file_id,"   \"num_packets_transmitted\":%g,",f_measure_total_i_packet_count_all);
+	         $fdisplay(file_id,"   \"num_packets_received\":%g,",f_measure_total_o_packet_count_all);
+	         $fdisplay(file_id,"   \"average_packet_delay\":%g,",f_average_latency_all);
+	         $fdisplay(file_id,"   \"max_packet_delay\":%g,",f_max_latency_all);
+	         $fdisplay(file_id,"   \"packet.throughput\":%g,",f_throughput_o_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_received\":%g,",f_measure_total_o_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.average_packet_delay\":%g,",f_average_latency_normal);
+	         $fdisplay(file_id,"   \"packet.max_packet_delay\":%g,",f_max_latency_normal);
+	         $fdisplay(file_id,"   \"acopacket.throughput\":%g,",f_throughput_o_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_received\":%g,",f_measure_total_o_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.average_packet_delay\":%g,",f_average_latency_ant);
+	         $fdisplay(file_id,"   \"acopacket.max_packet_delay\":%g",f_max_latency_ant);
+	         $fdisplay(file_id,"}");
+				$fclose(file_id);
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_10/t_hotspot/r_odd_even/s_random/config.json");
+            $fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"num_nodes\":%g,",`NODES);
+				$fdisplay(file_id,"   \"warmup_packets\":%g,",WARMUP_PACKETS);
+				$fdisplay(file_id,"   \"measure_packets\":%g,",MEASURE_PACKETS);
+				$fdisplay(file_id,"   \"drain_packets\":%g,",DRAIN_PACKETS);
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+				$fdisplay(file_id,"   \"router_input_queue_depth\":%g,",`INPUT_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"PEnode_input_queue_depth\":%g,",NODE_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"create_ant_packet_period\":%g,",`CREATE_ANT_PERIOD);
+				$fdisplay(file_id,"   \"pheromone_table_value_width\":%g,",`PH_TABLE_DEPTH);
+				$fdisplay(file_id,"   \"result_dir\":\"results/j_10/t_hotspot/r_odd_even/s_aco/\",");
+				$fdisplay(file_id,"   \"routing\":\"odd_even\",");
+				$fdisplay(file_id,"   \"selection\":\"aco\",");
+				$fdisplay(file_id,"   \"traffic\":\"hotspot\",");
+				$fdisplay(file_id,"   \"packet_injection_rate\":%g,",PACKET_RATE);
+				$fdisplay(file_id,"   \"aco_packet_injection_rate\":%g,",ANT_PACKET_RATE);
+				$fdisplay(file_id,"   \"hotspot_packet_injection_rate\":%g",HOTSPOT_PACKET_RATE);
+	         $fdisplay(file_id,"}");
 				$fclose(file_id);
 			end
 			end
@@ -2316,37 +2869,53 @@ module tb_network
 
 			if(PACKET_RATE == 10 && traffic_type == 3 && routing_type == 2 && selection_type == 2)begin
             file_id = $fopen(
-"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_10/t_hotspot/r_odd_even/s_buffer_level/stats.txt");
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_10/t_hotspot/r_odd_even/s_buffer_level/stats.json");
 			   
-			if (f_time == `warmup_packets_num*20-1) begin
+			if (f_time == `warmup_packets_num*10-1) begin
 	
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
-				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
-				$fdisplay(file_id,"",);
-				
-				$fdisplay(file_id," -- All packets:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Normal packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Ant packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
-				$fdisplay(file_id,"");
-			
+				$fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+	         $fdisplay(file_id,"   \"throughput\":%g,",f_throughput_o_all);
+	         $fdisplay(file_id,"   \"num_packets_transmitted\":%g,",f_measure_total_i_packet_count_all);
+	         $fdisplay(file_id,"   \"num_packets_received\":%g,",f_measure_total_o_packet_count_all);
+	         $fdisplay(file_id,"   \"average_packet_delay\":%g,",f_average_latency_all);
+	         $fdisplay(file_id,"   \"max_packet_delay\":%g,",f_max_latency_all);
+	         $fdisplay(file_id,"   \"packet.throughput\":%g,",f_throughput_o_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_received\":%g,",f_measure_total_o_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.average_packet_delay\":%g,",f_average_latency_normal);
+	         $fdisplay(file_id,"   \"packet.max_packet_delay\":%g,",f_max_latency_normal);
+	         $fdisplay(file_id,"   \"acopacket.throughput\":%g,",f_throughput_o_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_received\":%g,",f_measure_total_o_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.average_packet_delay\":%g,",f_average_latency_ant);
+	         $fdisplay(file_id,"   \"acopacket.max_packet_delay\":%g",f_max_latency_ant);
+	         $fdisplay(file_id,"}");
+				$fclose(file_id);
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_10/t_hotspot/r_odd_even/s_buffer_level/config.json");
+            $fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"num_nodes\":%g,",`NODES);
+				$fdisplay(file_id,"   \"warmup_packets\":%g,",WARMUP_PACKETS);
+				$fdisplay(file_id,"   \"measure_packets\":%g,",MEASURE_PACKETS);
+				$fdisplay(file_id,"   \"drain_packets\":%g,",DRAIN_PACKETS);
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+				$fdisplay(file_id,"   \"router_input_queue_depth\":%g,",`INPUT_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"PEnode_input_queue_depth\":%g,",NODE_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"create_ant_packet_period\":%g,",`CREATE_ANT_PERIOD);
+				$fdisplay(file_id,"   \"pheromone_table_value_width\":%g,",`PH_TABLE_DEPTH);
+				$fdisplay(file_id,"   \"result_dir\":\"results/j_10/t_hotspot/r_odd_even/s_aco/\",");
+				$fdisplay(file_id,"   \"routing\":\"odd_even\",");
+				$fdisplay(file_id,"   \"selection\":\"aco\",");
+				$fdisplay(file_id,"   \"traffic\":\"hotspot\",");
+				$fdisplay(file_id,"   \"packet_injection_rate\":%g,",PACKET_RATE);
+				$fdisplay(file_id,"   \"aco_packet_injection_rate\":%g,",ANT_PACKET_RATE);
+				$fdisplay(file_id,"   \"hotspot_packet_injection_rate\":%g",HOTSPOT_PACKET_RATE);
+	         $fdisplay(file_id,"}");
 				$fclose(file_id);
 			end
 			end
@@ -2356,38 +2925,54 @@ module tb_network
 	*************************************************************************************************************************************/
 
 			if(PACKET_RATE == 10 && traffic_type == 3 && routing_type == 2 && selection_type == 3)begin
-            file_id = $fopen(
-"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_10/t_hotspot/r_odd_even/s_aco/stats.txt");
 			   
-			if (f_time == `warmup_packets_num*20-1) begin
+			if (f_time == `warmup_packets_num*10-1) begin
 	
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
-				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
-				$fdisplay(file_id,"",);
-				
-				$fdisplay(file_id," -- All packets:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Normal packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Ant packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
-				$fdisplay(file_id,"");
-			
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_10/t_hotspot/r_odd_even/s_aco/stats.json");
+				$fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+	         $fdisplay(file_id,"   \"throughput\":%g,",f_throughput_o_all);
+	         $fdisplay(file_id,"   \"num_packets_transmitted\":%g,",f_measure_total_i_packet_count_all);
+	         $fdisplay(file_id,"   \"num_packets_received\":%g,",f_measure_total_o_packet_count_all);
+	         $fdisplay(file_id,"   \"average_packet_delay\":%g,",f_average_latency_all);
+	         $fdisplay(file_id,"   \"max_packet_delay\":%g,",f_max_latency_all);
+	         $fdisplay(file_id,"   \"packet.throughput\":%g,",f_throughput_o_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_received\":%g,",f_measure_total_o_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.average_packet_delay\":%g,",f_average_latency_normal);
+	         $fdisplay(file_id,"   \"packet.max_packet_delay\":%g,",f_max_latency_normal);
+	         $fdisplay(file_id,"   \"acopacket.throughput\":%g,",f_throughput_o_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_received\":%g,",f_measure_total_o_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.average_packet_delay\":%g,",f_average_latency_ant);
+	         $fdisplay(file_id,"   \"acopacket.max_packet_delay\":%g",f_max_latency_ant);
+	         $fdisplay(file_id,"}");
+				$fclose(file_id);
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_10/t_hotspot/r_odd_even/s_aco/config.json");
+            $fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"num_nodes\":%g,",`NODES);
+				$fdisplay(file_id,"   \"warmup_packets\":%g,",WARMUP_PACKETS);
+				$fdisplay(file_id,"   \"measure_packets\":%g,",MEASURE_PACKETS);
+				$fdisplay(file_id,"   \"drain_packets\":%g,",DRAIN_PACKETS);
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+				$fdisplay(file_id,"   \"router_input_queue_depth\":%g,",`INPUT_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"PEnode_input_queue_depth\":%g,",NODE_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"create_ant_packet_period\":%g,",`CREATE_ANT_PERIOD);
+				$fdisplay(file_id,"   \"pheromone_table_value_width\":%g,",`PH_TABLE_DEPTH);
+				$fdisplay(file_id,"   \"result_dir\":\"results/j_10/t_hotspot/r_odd_even/s_aco/\",");
+				$fdisplay(file_id,"   \"routing\":\"odd_even\",");
+				$fdisplay(file_id,"   \"selection\":\"aco\",");
+				$fdisplay(file_id,"   \"traffic\":\"hotspot\",");
+				$fdisplay(file_id,"   \"packet_injection_rate\":%g,",PACKET_RATE);
+				$fdisplay(file_id,"   \"aco_packet_injection_rate\":%g,",ANT_PACKET_RATE);
+				$fdisplay(file_id,"   \"hotspot_packet_injection_rate\":%g",HOTSPOT_PACKET_RATE);
+	         $fdisplay(file_id,"}");
 				$fclose(file_id);
 			end
 			end
@@ -2406,38 +2991,54 @@ module tb_network
 
 	*************************************************************************************************************************************/
 			if(PACKET_RATE == 20 && traffic_type == 1 && routing_type == 1 && selection_type == 1)begin
-            file_id = $fopen(
-"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_20/t_uniform/r_xy/s_random/stats.txt");
 			   
-			if (f_time == `warmup_packets_num*20-1) begin
+			if (f_time == `warmup_packets_num*10-1) begin
 	
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
-				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
-				$fdisplay(file_id,"",);
-				
-				$fdisplay(file_id," -- All packets:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Normal packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Ant packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
-				$fdisplay(file_id,"");
-			
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_20/t_uniform/r_xy/s_random/stats.json");
+				$fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+	         $fdisplay(file_id,"   \"throughput\":%g,",f_throughput_o_all);
+	         $fdisplay(file_id,"   \"num_packets_transmitted\":%g,",f_measure_total_i_packet_count_all);
+	         $fdisplay(file_id,"   \"num_packets_received\":%g,",f_measure_total_o_packet_count_all);
+	         $fdisplay(file_id,"   \"average_packet_delay\":%g,",f_average_latency_all);
+	         $fdisplay(file_id,"   \"max_packet_delay\":%g,",f_max_latency_all);
+	         $fdisplay(file_id,"   \"packet.throughput\":%g,",f_throughput_o_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_received\":%g,",f_measure_total_o_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.average_packet_delay\":%g,",f_average_latency_normal);
+	         $fdisplay(file_id,"   \"packet.max_packet_delay\":%g,",f_max_latency_normal);
+	         $fdisplay(file_id,"   \"acopacket.throughput\":%g,",f_throughput_o_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_received\":%g,",f_measure_total_o_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.average_packet_delay\":%g,",f_average_latency_ant);
+	         $fdisplay(file_id,"   \"acopacket.max_packet_delay\":%g",f_max_latency_ant);
+	         $fdisplay(file_id,"}");
+				$fclose(file_id);
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_20/t_uniform/r_xy/s_random/config.json");
+            $fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"num_nodes\":%g,",`NODES);
+				$fdisplay(file_id,"   \"warmup_packets\":%g,",WARMUP_PACKETS);
+				$fdisplay(file_id,"   \"measure_packets\":%g,",MEASURE_PACKETS);
+				$fdisplay(file_id,"   \"drain_packets\":%g,",DRAIN_PACKETS);
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+				$fdisplay(file_id,"   \"router_input_queue_depth\":%g,",`INPUT_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"PEnode_input_queue_depth\":%g,",NODE_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"create_ant_packet_period\":%g,",`CREATE_ANT_PERIOD);
+				$fdisplay(file_id,"   \"pheromone_table_value_width\":%g,",`PH_TABLE_DEPTH);
+				$fdisplay(file_id,"   \"result_dir\":\"results/j_10/t_hotspot/r_odd_even/s_aco/\",");
+				$fdisplay(file_id,"   \"routing\":\"odd_even\",");
+				$fdisplay(file_id,"   \"selection\":\"aco\",");
+				$fdisplay(file_id,"   \"traffic\":\"hotspot\",");
+				$fdisplay(file_id,"   \"packet_injection_rate\":%g,",PACKET_RATE);
+				$fdisplay(file_id,"   \"aco_packet_injection_rate\":%g,",ANT_PACKET_RATE);
+				$fdisplay(file_id,"   \"hotspot_packet_injection_rate\":%g",HOTSPOT_PACKET_RATE);
+	         $fdisplay(file_id,"}");
 				$fclose(file_id);
 			end
 			end
@@ -2447,38 +3048,54 @@ module tb_network
 	*************************************************************************************************************************************/
 
 			if(PACKET_RATE == 20 && traffic_type == 1 && routing_type == 2 && selection_type == 1)begin
-            file_id = $fopen(
-"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_20/t_uniform/r_odd_even/s_random/stats.txt");
 			   
-			if (f_time == `warmup_packets_num*20-1) begin
+			if (f_time == `warmup_packets_num*10-1) begin
 	
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
-				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
-				$fdisplay(file_id,"",);
-				
-				$fdisplay(file_id," -- All packets:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Normal packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Ant packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
-				$fdisplay(file_id,"");
-			
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_20/t_uniform/r_odd_even/s_random/stats.json");
+				$fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+	         $fdisplay(file_id,"   \"throughput\":%g,",f_throughput_o_all);
+	         $fdisplay(file_id,"   \"num_packets_transmitted\":%g,",f_measure_total_i_packet_count_all);
+	         $fdisplay(file_id,"   \"num_packets_received\":%g,",f_measure_total_o_packet_count_all);
+	         $fdisplay(file_id,"   \"average_packet_delay\":%g,",f_average_latency_all);
+	         $fdisplay(file_id,"   \"max_packet_delay\":%g,",f_max_latency_all);
+	         $fdisplay(file_id,"   \"packet.throughput\":%g,",f_throughput_o_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_received\":%g,",f_measure_total_o_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.average_packet_delay\":%g,",f_average_latency_normal);
+	         $fdisplay(file_id,"   \"packet.max_packet_delay\":%g,",f_max_latency_normal);
+	         $fdisplay(file_id,"   \"acopacket.throughput\":%g,",f_throughput_o_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_received\":%g,",f_measure_total_o_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.average_packet_delay\":%g,",f_average_latency_ant);
+	         $fdisplay(file_id,"   \"acopacket.max_packet_delay\":%g",f_max_latency_ant);
+	         $fdisplay(file_id,"}");
+				$fclose(file_id);
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_20/t_uniform/r_odd_even/s_random/config.json");
+            $fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"num_nodes\":%g,",`NODES);
+				$fdisplay(file_id,"   \"warmup_packets\":%g,",WARMUP_PACKETS);
+				$fdisplay(file_id,"   \"measure_packets\":%g,",MEASURE_PACKETS);
+				$fdisplay(file_id,"   \"drain_packets\":%g,",DRAIN_PACKETS);
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+				$fdisplay(file_id,"   \"router_input_queue_depth\":%g,",`INPUT_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"PEnode_input_queue_depth\":%g,",NODE_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"create_ant_packet_period\":%g,",`CREATE_ANT_PERIOD);
+				$fdisplay(file_id,"   \"pheromone_table_value_width\":%g,",`PH_TABLE_DEPTH);
+				$fdisplay(file_id,"   \"result_dir\":\"results/j_10/t_hotspot/r_odd_even/s_aco/\",");
+				$fdisplay(file_id,"   \"routing\":\"odd_even\",");
+				$fdisplay(file_id,"   \"selection\":\"aco\",");
+				$fdisplay(file_id,"   \"traffic\":\"hotspot\",");
+				$fdisplay(file_id,"   \"packet_injection_rate\":%g,",PACKET_RATE);
+				$fdisplay(file_id,"   \"aco_packet_injection_rate\":%g,",ANT_PACKET_RATE);
+				$fdisplay(file_id,"   \"hotspot_packet_injection_rate\":%g",HOTSPOT_PACKET_RATE);
+	         $fdisplay(file_id,"}");
 				$fclose(file_id);
 			end
 			end
@@ -2488,38 +3105,54 @@ module tb_network
 	*************************************************************************************************************************************/
 
 			if(PACKET_RATE == 20 && traffic_type == 1 && routing_type == 2 && selection_type == 2)begin
-            file_id = $fopen(
-"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_20/t_uniform/r_odd_even/s_buffer_level/stats.txt");
 			   
-			if (f_time == `warmup_packets_num*20-1) begin
+			if (f_time == `warmup_packets_num*10-1) begin
 	
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
-				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
-				$fdisplay(file_id,"",);
-				
-				$fdisplay(file_id," -- All packets:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Normal packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Ant packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
-				$fdisplay(file_id,"");
-			
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_20/t_uniform/r_odd_even/s_buffer_level/stats.json");
+				$fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+	         $fdisplay(file_id,"   \"throughput\":%g,",f_throughput_o_all);
+	         $fdisplay(file_id,"   \"num_packets_transmitted\":%g,",f_measure_total_i_packet_count_all);
+	         $fdisplay(file_id,"   \"num_packets_received\":%g,",f_measure_total_o_packet_count_all);
+	         $fdisplay(file_id,"   \"average_packet_delay\":%g,",f_average_latency_all);
+	         $fdisplay(file_id,"   \"max_packet_delay\":%g,",f_max_latency_all);
+	         $fdisplay(file_id,"   \"packet.throughput\":%g,",f_throughput_o_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_received\":%g,",f_measure_total_o_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.average_packet_delay\":%g,",f_average_latency_normal);
+	         $fdisplay(file_id,"   \"packet.max_packet_delay\":%g,",f_max_latency_normal);
+	         $fdisplay(file_id,"   \"acopacket.throughput\":%g,",f_throughput_o_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_received\":%g,",f_measure_total_o_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.average_packet_delay\":%g,",f_average_latency_ant);
+	         $fdisplay(file_id,"   \"acopacket.max_packet_delay\":%g",f_max_latency_ant);
+	         $fdisplay(file_id,"}");
+				$fclose(file_id);
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_20/t_uniform/r_odd_even/s_buffer_level/config.json");
+            $fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"num_nodes\":%g,",`NODES);
+				$fdisplay(file_id,"   \"warmup_packets\":%g,",WARMUP_PACKETS);
+				$fdisplay(file_id,"   \"measure_packets\":%g,",MEASURE_PACKETS);
+				$fdisplay(file_id,"   \"drain_packets\":%g,",DRAIN_PACKETS);
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+				$fdisplay(file_id,"   \"router_input_queue_depth\":%g,",`INPUT_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"PEnode_input_queue_depth\":%g,",NODE_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"create_ant_packet_period\":%g,",`CREATE_ANT_PERIOD);
+				$fdisplay(file_id,"   \"pheromone_table_value_width\":%g,",`PH_TABLE_DEPTH);
+				$fdisplay(file_id,"   \"result_dir\":\"results/j_10/t_hotspot/r_odd_even/s_aco/\",");
+				$fdisplay(file_id,"   \"routing\":\"odd_even\",");
+				$fdisplay(file_id,"   \"selection\":\"aco\",");
+				$fdisplay(file_id,"   \"traffic\":\"hotspot\",");
+				$fdisplay(file_id,"   \"packet_injection_rate\":%g,",PACKET_RATE);
+				$fdisplay(file_id,"   \"aco_packet_injection_rate\":%g,",ANT_PACKET_RATE);
+				$fdisplay(file_id,"   \"hotspot_packet_injection_rate\":%g",HOTSPOT_PACKET_RATE);
+	         $fdisplay(file_id,"}");
 				$fclose(file_id);
 			end
 			end
@@ -2529,38 +3162,54 @@ module tb_network
 	*************************************************************************************************************************************/
 
 			if(PACKET_RATE == 20 && traffic_type == 1 && routing_type == 2 && selection_type == 3)begin
-            file_id = $fopen(
-"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_20/t_uniform/r_odd_even/s_aco/stats.txt");
 			   
-			if (f_time == `warmup_packets_num*20-1) begin
+			if (f_time == `warmup_packets_num*10-1) begin
 	
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
-				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
-				$fdisplay(file_id,"",);
-				
-				$fdisplay(file_id," -- All packets:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Normal packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Ant packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
-				$fdisplay(file_id,"");
-			
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_20/t_uniform/r_odd_even/s_aco/stats.json");
+				$fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+	         $fdisplay(file_id,"   \"throughput\":%g,",f_throughput_o_all);
+	         $fdisplay(file_id,"   \"num_packets_transmitted\":%g,",f_measure_total_i_packet_count_all);
+	         $fdisplay(file_id,"   \"num_packets_received\":%g,",f_measure_total_o_packet_count_all);
+	         $fdisplay(file_id,"   \"average_packet_delay\":%g,",f_average_latency_all);
+	         $fdisplay(file_id,"   \"max_packet_delay\":%g,",f_max_latency_all);
+	         $fdisplay(file_id,"   \"packet.throughput\":%g,",f_throughput_o_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_received\":%g,",f_measure_total_o_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.average_packet_delay\":%g,",f_average_latency_normal);
+	         $fdisplay(file_id,"   \"packet.max_packet_delay\":%g,",f_max_latency_normal);
+	         $fdisplay(file_id,"   \"acopacket.throughput\":%g,",f_throughput_o_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_received\":%g,",f_measure_total_o_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.average_packet_delay\":%g,",f_average_latency_ant);
+	         $fdisplay(file_id,"   \"acopacket.max_packet_delay\":%g",f_max_latency_ant);
+	         $fdisplay(file_id,"}");
+				$fclose(file_id);
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_20/t_uniform/r_odd_even/s_aco/config.json");
+            $fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"num_nodes\":%g,",`NODES);
+				$fdisplay(file_id,"   \"warmup_packets\":%g,",WARMUP_PACKETS);
+				$fdisplay(file_id,"   \"measure_packets\":%g,",MEASURE_PACKETS);
+				$fdisplay(file_id,"   \"drain_packets\":%g,",DRAIN_PACKETS);
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+				$fdisplay(file_id,"   \"router_input_queue_depth\":%g,",`INPUT_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"PEnode_input_queue_depth\":%g,",NODE_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"create_ant_packet_period\":%g,",`CREATE_ANT_PERIOD);
+				$fdisplay(file_id,"   \"pheromone_table_value_width\":%g,",`PH_TABLE_DEPTH);
+				$fdisplay(file_id,"   \"result_dir\":\"results/j_10/t_hotspot/r_odd_even/s_aco/\",");
+				$fdisplay(file_id,"   \"routing\":\"odd_even\",");
+				$fdisplay(file_id,"   \"selection\":\"aco\",");
+				$fdisplay(file_id,"   \"traffic\":\"hotspot\",");
+				$fdisplay(file_id,"   \"packet_injection_rate\":%g,",PACKET_RATE);
+				$fdisplay(file_id,"   \"aco_packet_injection_rate\":%g,",ANT_PACKET_RATE);
+				$fdisplay(file_id,"   \"hotspot_packet_injection_rate\":%g",HOTSPOT_PACKET_RATE);
+	         $fdisplay(file_id,"}");
 				$fclose(file_id);
 			end
 			end
@@ -2569,38 +3218,54 @@ module tb_network
 
 	*************************************************************************************************************************************/
 			if(PACKET_RATE == 20 && traffic_type == 2 && routing_type == 1 && selection_type == 1)begin
-            file_id = $fopen(
-"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_20/t_transpose/r_xy/s_random/stats.txt");
 			   
-			if (f_time == `warmup_packets_num*20-1) begin
+			if (f_time == `warmup_packets_num*10-1) begin
 	
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
-				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
-				$fdisplay(file_id,"",);
-				
-				$fdisplay(file_id," -- All packets:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Normal packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Ant packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
-				$fdisplay(file_id,"");
-			
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_20/t_transpose/r_xy/s_random/stats.json");
+				$fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+	         $fdisplay(file_id,"   \"throughput\":%g,",f_throughput_o_all);
+	         $fdisplay(file_id,"   \"num_packets_transmitted\":%g,",f_measure_total_i_packet_count_all);
+	         $fdisplay(file_id,"   \"num_packets_received\":%g,",f_measure_total_o_packet_count_all);
+	         $fdisplay(file_id,"   \"average_packet_delay\":%g,",f_average_latency_all);
+	         $fdisplay(file_id,"   \"max_packet_delay\":%g,",f_max_latency_all);
+	         $fdisplay(file_id,"   \"packet.throughput\":%g,",f_throughput_o_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_received\":%g,",f_measure_total_o_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.average_packet_delay\":%g,",f_average_latency_normal);
+	         $fdisplay(file_id,"   \"packet.max_packet_delay\":%g,",f_max_latency_normal);
+	         $fdisplay(file_id,"   \"acopacket.throughput\":%g,",f_throughput_o_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_received\":%g,",f_measure_total_o_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.average_packet_delay\":%g,",f_average_latency_ant);
+	         $fdisplay(file_id,"   \"acopacket.max_packet_delay\":%g",f_max_latency_ant);
+	         $fdisplay(file_id,"}");
+				$fclose(file_id);
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_20/t_transpose/r_xy/s_random/config.json");
+            $fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"num_nodes\":%g,",`NODES);
+				$fdisplay(file_id,"   \"warmup_packets\":%g,",WARMUP_PACKETS);
+				$fdisplay(file_id,"   \"measure_packets\":%g,",MEASURE_PACKETS);
+				$fdisplay(file_id,"   \"drain_packets\":%g,",DRAIN_PACKETS);
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+				$fdisplay(file_id,"   \"router_input_queue_depth\":%g,",`INPUT_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"PEnode_input_queue_depth\":%g,",NODE_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"create_ant_packet_period\":%g,",`CREATE_ANT_PERIOD);
+				$fdisplay(file_id,"   \"pheromone_table_value_width\":%g,",`PH_TABLE_DEPTH);
+				$fdisplay(file_id,"   \"result_dir\":\"results/j_10/t_hotspot/r_odd_even/s_aco/\",");
+				$fdisplay(file_id,"   \"routing\":\"odd_even\",");
+				$fdisplay(file_id,"   \"selection\":\"aco\",");
+				$fdisplay(file_id,"   \"traffic\":\"hotspot\",");
+				$fdisplay(file_id,"   \"packet_injection_rate\":%g,",PACKET_RATE);
+				$fdisplay(file_id,"   \"aco_packet_injection_rate\":%g,",ANT_PACKET_RATE);
+				$fdisplay(file_id,"   \"hotspot_packet_injection_rate\":%g",HOTSPOT_PACKET_RATE);
+	         $fdisplay(file_id,"}");
 				$fclose(file_id);
 			end
 			end
@@ -2610,38 +3275,54 @@ module tb_network
 	*************************************************************************************************************************************/
 
 			if(PACKET_RATE == 20 && traffic_type == 2 && routing_type == 2 && selection_type == 1)begin
-            file_id = $fopen(
-"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_20/t_transpose/r_odd_even/s_random/stats.txt");
 			   
-			if (f_time == `warmup_packets_num*20-1) begin
+			if (f_time == `warmup_packets_num*10-1) begin
 	
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
-				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
-				$fdisplay(file_id,"",);
-				
-				$fdisplay(file_id," -- All packets:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Normal packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Ant packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
-				$fdisplay(file_id,"");
-			
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_20/t_transpose/r_odd_even/s_random/stats.json");
+				$fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+	         $fdisplay(file_id,"   \"throughput\":%g,",f_throughput_o_all);
+	         $fdisplay(file_id,"   \"num_packets_transmitted\":%g,",f_measure_total_i_packet_count_all);
+	         $fdisplay(file_id,"   \"num_packets_received\":%g,",f_measure_total_o_packet_count_all);
+	         $fdisplay(file_id,"   \"average_packet_delay\":%g,",f_average_latency_all);
+	         $fdisplay(file_id,"   \"max_packet_delay\":%g,",f_max_latency_all);
+	         $fdisplay(file_id,"   \"packet.throughput\":%g,",f_throughput_o_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_received\":%g,",f_measure_total_o_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.average_packet_delay\":%g,",f_average_latency_normal);
+	         $fdisplay(file_id,"   \"packet.max_packet_delay\":%g,",f_max_latency_normal);
+	         $fdisplay(file_id,"   \"acopacket.throughput\":%g,",f_throughput_o_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_received\":%g,",f_measure_total_o_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.average_packet_delay\":%g,",f_average_latency_ant);
+	         $fdisplay(file_id,"   \"acopacket.max_packet_delay\":%g",f_max_latency_ant);
+	         $fdisplay(file_id,"}");
+				$fclose(file_id);
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_20/t_transpose/r_odd_even/s_random/config.json");
+            $fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"num_nodes\":%g,",`NODES);
+				$fdisplay(file_id,"   \"warmup_packets\":%g,",WARMUP_PACKETS);
+				$fdisplay(file_id,"   \"measure_packets\":%g,",MEASURE_PACKETS);
+				$fdisplay(file_id,"   \"drain_packets\":%g,",DRAIN_PACKETS);
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+				$fdisplay(file_id,"   \"router_input_queue_depth\":%g,",`INPUT_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"PEnode_input_queue_depth\":%g,",NODE_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"create_ant_packet_period\":%g,",`CREATE_ANT_PERIOD);
+				$fdisplay(file_id,"   \"pheromone_table_value_width\":%g,",`PH_TABLE_DEPTH);
+				$fdisplay(file_id,"   \"result_dir\":\"results/j_10/t_hotspot/r_odd_even/s_aco/\",");
+				$fdisplay(file_id,"   \"routing\":\"odd_even\",");
+				$fdisplay(file_id,"   \"selection\":\"aco\",");
+				$fdisplay(file_id,"   \"traffic\":\"hotspot\",");
+				$fdisplay(file_id,"   \"packet_injection_rate\":%g,",PACKET_RATE);
+				$fdisplay(file_id,"   \"aco_packet_injection_rate\":%g,",ANT_PACKET_RATE);
+				$fdisplay(file_id,"   \"hotspot_packet_injection_rate\":%g",HOTSPOT_PACKET_RATE);
+	         $fdisplay(file_id,"}");
 				$fclose(file_id);
 			end
 			end
@@ -2651,38 +3332,54 @@ module tb_network
 	*************************************************************************************************************************************/
 
 			if(PACKET_RATE == 20 && traffic_type == 2 && routing_type == 2 && selection_type == 2)begin
-            file_id = $fopen(
-"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_20/t_transpose/r_odd_even/s_buffer_level/stats.txt");
 			   
-			if (f_time == `warmup_packets_num*20-1) begin
+			if (f_time == `warmup_packets_num*10-1) begin
 	
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
-				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
-				$fdisplay(file_id,"",);
-				
-				$fdisplay(file_id," -- All packets:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Normal packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Ant packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
-				$fdisplay(file_id,"");
-			
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_20/t_transpose/r_odd_even/s_buffer_level/stats.json");
+				$fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+	         $fdisplay(file_id,"   \"throughput\":%g,",f_throughput_o_all);
+	         $fdisplay(file_id,"   \"num_packets_transmitted\":%g,",f_measure_total_i_packet_count_all);
+	         $fdisplay(file_id,"   \"num_packets_received\":%g,",f_measure_total_o_packet_count_all);
+	         $fdisplay(file_id,"   \"average_packet_delay\":%g,",f_average_latency_all);
+	         $fdisplay(file_id,"   \"max_packet_delay\":%g,",f_max_latency_all);
+	         $fdisplay(file_id,"   \"packet.throughput\":%g,",f_throughput_o_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_received\":%g,",f_measure_total_o_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.average_packet_delay\":%g,",f_average_latency_normal);
+	         $fdisplay(file_id,"   \"packet.max_packet_delay\":%g,",f_max_latency_normal);
+	         $fdisplay(file_id,"   \"acopacket.throughput\":%g,",f_throughput_o_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_received\":%g,",f_measure_total_o_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.average_packet_delay\":%g,",f_average_latency_ant);
+	         $fdisplay(file_id,"   \"acopacket.max_packet_delay\":%g",f_max_latency_ant);
+	         $fdisplay(file_id,"}");
+				$fclose(file_id);
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_20/t_transpose/r_odd_even/s_buffer_level/config.json");
+            $fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"num_nodes\":%g,",`NODES);
+				$fdisplay(file_id,"   \"warmup_packets\":%g,",WARMUP_PACKETS);
+				$fdisplay(file_id,"   \"measure_packets\":%g,",MEASURE_PACKETS);
+				$fdisplay(file_id,"   \"drain_packets\":%g,",DRAIN_PACKETS);
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+				$fdisplay(file_id,"   \"router_input_queue_depth\":%g,",`INPUT_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"PEnode_input_queue_depth\":%g,",NODE_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"create_ant_packet_period\":%g,",`CREATE_ANT_PERIOD);
+				$fdisplay(file_id,"   \"pheromone_table_value_width\":%g,",`PH_TABLE_DEPTH);
+				$fdisplay(file_id,"   \"result_dir\":\"results/j_10/t_hotspot/r_odd_even/s_aco/\",");
+				$fdisplay(file_id,"   \"routing\":\"odd_even\",");
+				$fdisplay(file_id,"   \"selection\":\"aco\",");
+				$fdisplay(file_id,"   \"traffic\":\"hotspot\",");
+				$fdisplay(file_id,"   \"packet_injection_rate\":%g,",PACKET_RATE);
+				$fdisplay(file_id,"   \"aco_packet_injection_rate\":%g,",ANT_PACKET_RATE);
+				$fdisplay(file_id,"   \"hotspot_packet_injection_rate\":%g",HOTSPOT_PACKET_RATE);
+	         $fdisplay(file_id,"}");
 				$fclose(file_id);
 			end
 			end
@@ -2692,38 +3389,54 @@ module tb_network
 	*************************************************************************************************************************************/
 
 			if(PACKET_RATE == 20 && traffic_type == 2 && routing_type == 2 && selection_type == 3)begin
-            file_id = $fopen(
-"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_20/t_transpose/r_odd_even/s_aco/stats.txt");
 			   
-			if (f_time == `warmup_packets_num*20-1) begin
+			if (f_time == `warmup_packets_num*10-1) begin
 	
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
-				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
-				$fdisplay(file_id,"",);
-				
-				$fdisplay(file_id," -- All packets:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Normal packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Ant packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
-				$fdisplay(file_id,"");
-			
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_20/t_transpose/r_odd_even/s_aco/stats.json");
+				$fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+	         $fdisplay(file_id,"   \"throughput\":%g,",f_throughput_o_all);
+	         $fdisplay(file_id,"   \"num_packets_transmitted\":%g,",f_measure_total_i_packet_count_all);
+	         $fdisplay(file_id,"   \"num_packets_received\":%g,",f_measure_total_o_packet_count_all);
+	         $fdisplay(file_id,"   \"average_packet_delay\":%g,",f_average_latency_all);
+	         $fdisplay(file_id,"   \"max_packet_delay\":%g,",f_max_latency_all);
+	         $fdisplay(file_id,"   \"packet.throughput\":%g,",f_throughput_o_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_received\":%g,",f_measure_total_o_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.average_packet_delay\":%g,",f_average_latency_normal);
+	         $fdisplay(file_id,"   \"packet.max_packet_delay\":%g,",f_max_latency_normal);
+	         $fdisplay(file_id,"   \"acopacket.throughput\":%g,",f_throughput_o_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_received\":%g,",f_measure_total_o_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.average_packet_delay\":%g,",f_average_latency_ant);
+	         $fdisplay(file_id,"   \"acopacket.max_packet_delay\":%g",f_max_latency_ant);
+	         $fdisplay(file_id,"}");
+				$fclose(file_id);
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_20/t_transpose/r_odd_even/s_aco/config.json");
+            $fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"num_nodes\":%g,",`NODES);
+				$fdisplay(file_id,"   \"warmup_packets\":%g,",WARMUP_PACKETS);
+				$fdisplay(file_id,"   \"measure_packets\":%g,",MEASURE_PACKETS);
+				$fdisplay(file_id,"   \"drain_packets\":%g,",DRAIN_PACKETS);
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+				$fdisplay(file_id,"   \"router_input_queue_depth\":%g,",`INPUT_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"PEnode_input_queue_depth\":%g,",NODE_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"create_ant_packet_period\":%g,",`CREATE_ANT_PERIOD);
+				$fdisplay(file_id,"   \"pheromone_table_value_width\":%g,",`PH_TABLE_DEPTH);
+				$fdisplay(file_id,"   \"result_dir\":\"results/j_10/t_hotspot/r_odd_even/s_aco/\",");
+				$fdisplay(file_id,"   \"routing\":\"odd_even\",");
+				$fdisplay(file_id,"   \"selection\":\"aco\",");
+				$fdisplay(file_id,"   \"traffic\":\"hotspot\",");
+				$fdisplay(file_id,"   \"packet_injection_rate\":%g,",PACKET_RATE);
+				$fdisplay(file_id,"   \"aco_packet_injection_rate\":%g,",ANT_PACKET_RATE);
+				$fdisplay(file_id,"   \"hotspot_packet_injection_rate\":%g",HOTSPOT_PACKET_RATE);
+	         $fdisplay(file_id,"}");
 				$fclose(file_id);
 			end
 			end
@@ -2732,38 +3445,54 @@ module tb_network
 
 	*************************************************************************************************************************************/
 			if(PACKET_RATE == 20 && traffic_type == 3 && routing_type == 1 && selection_type == 1)begin
-            file_id = $fopen(
-"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_20/t_hotspot/r_xy/s_random/stats.txt");
 			   
-			if (f_time == `warmup_packets_num*20-1) begin
+			if (f_time == `warmup_packets_num*10-1) begin
 	
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
-				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
-				$fdisplay(file_id,"",);
-				
-				$fdisplay(file_id," -- All packets:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Normal packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Ant packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
-				$fdisplay(file_id,"");
-			
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_20/t_hotspot/r_xy/s_random/stats.json");
+				$fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+	         $fdisplay(file_id,"   \"throughput\":%g,",f_throughput_o_all);
+	         $fdisplay(file_id,"   \"num_packets_transmitted\":%g,",f_measure_total_i_packet_count_all);
+	         $fdisplay(file_id,"   \"num_packets_received\":%g,",f_measure_total_o_packet_count_all);
+	         $fdisplay(file_id,"   \"average_packet_delay\":%g,",f_average_latency_all);
+	         $fdisplay(file_id,"   \"max_packet_delay\":%g,",f_max_latency_all);
+	         $fdisplay(file_id,"   \"packet.throughput\":%g,",f_throughput_o_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_received\":%g,",f_measure_total_o_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.average_packet_delay\":%g,",f_average_latency_normal);
+	         $fdisplay(file_id,"   \"packet.max_packet_delay\":%g,",f_max_latency_normal);
+	         $fdisplay(file_id,"   \"acopacket.throughput\":%g,",f_throughput_o_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_received\":%g,",f_measure_total_o_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.average_packet_delay\":%g,",f_average_latency_ant);
+	         $fdisplay(file_id,"   \"acopacket.max_packet_delay\":%g",f_max_latency_ant);
+	         $fdisplay(file_id,"}");
+				$fclose(file_id);
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_20/t_hotspot/r_xy/s_random/config.json");
+            $fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"num_nodes\":%g,",`NODES);
+				$fdisplay(file_id,"   \"warmup_packets\":%g,",WARMUP_PACKETS);
+				$fdisplay(file_id,"   \"measure_packets\":%g,",MEASURE_PACKETS);
+				$fdisplay(file_id,"   \"drain_packets\":%g,",DRAIN_PACKETS);
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+				$fdisplay(file_id,"   \"router_input_queue_depth\":%g,",`INPUT_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"PEnode_input_queue_depth\":%g,",NODE_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"create_ant_packet_period\":%g,",`CREATE_ANT_PERIOD);
+				$fdisplay(file_id,"   \"pheromone_table_value_width\":%g,",`PH_TABLE_DEPTH);
+				$fdisplay(file_id,"   \"result_dir\":\"results/j_10/t_hotspot/r_odd_even/s_aco/\",");
+				$fdisplay(file_id,"   \"routing\":\"odd_even\",");
+				$fdisplay(file_id,"   \"selection\":\"aco\",");
+				$fdisplay(file_id,"   \"traffic\":\"hotspot\",");
+				$fdisplay(file_id,"   \"packet_injection_rate\":%g,",PACKET_RATE);
+				$fdisplay(file_id,"   \"aco_packet_injection_rate\":%g,",ANT_PACKET_RATE);
+				$fdisplay(file_id,"   \"hotspot_packet_injection_rate\":%g",HOTSPOT_PACKET_RATE);
+	         $fdisplay(file_id,"}");
 				$fclose(file_id);
 			end
 			end
@@ -2773,38 +3502,54 @@ module tb_network
 	*************************************************************************************************************************************/
 
 			if(PACKET_RATE == 20 && traffic_type == 3 && routing_type == 2 && selection_type == 1)begin
-            file_id = $fopen(
-"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_20/t_hotspot/r_odd_even/s_random/stats.txt");
 			   
-			if (f_time == `warmup_packets_num*20-1) begin
+			if (f_time == `warmup_packets_num*10-1) begin
 	
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
-				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
-				$fdisplay(file_id,"",);
-				
-				$fdisplay(file_id," -- All packets:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Normal packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Ant packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
-				$fdisplay(file_id,"");
-			
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_20/t_hotspot/r_odd_even/s_random/stats.json");
+				$fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+	         $fdisplay(file_id,"   \"throughput\":%g,",f_throughput_o_all);
+	         $fdisplay(file_id,"   \"num_packets_transmitted\":%g,",f_measure_total_i_packet_count_all);
+	         $fdisplay(file_id,"   \"num_packets_received\":%g,",f_measure_total_o_packet_count_all);
+	         $fdisplay(file_id,"   \"average_packet_delay\":%g,",f_average_latency_all);
+	         $fdisplay(file_id,"   \"max_packet_delay\":%g,",f_max_latency_all);
+	         $fdisplay(file_id,"   \"packet.throughput\":%g,",f_throughput_o_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_received\":%g,",f_measure_total_o_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.average_packet_delay\":%g,",f_average_latency_normal);
+	         $fdisplay(file_id,"   \"packet.max_packet_delay\":%g,",f_max_latency_normal);
+	         $fdisplay(file_id,"   \"acopacket.throughput\":%g,",f_throughput_o_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_received\":%g,",f_measure_total_o_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.average_packet_delay\":%g,",f_average_latency_ant);
+	         $fdisplay(file_id,"   \"acopacket.max_packet_delay\":%g",f_max_latency_ant);
+	         $fdisplay(file_id,"}");
+				$fclose(file_id);
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_20/t_hotspot/r_odd_even/s_random/config.json");
+            $fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"num_nodes\":%g,",`NODES);
+				$fdisplay(file_id,"   \"warmup_packets\":%g,",WARMUP_PACKETS);
+				$fdisplay(file_id,"   \"measure_packets\":%g,",MEASURE_PACKETS);
+				$fdisplay(file_id,"   \"drain_packets\":%g,",DRAIN_PACKETS);
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+				$fdisplay(file_id,"   \"router_input_queue_depth\":%g,",`INPUT_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"PEnode_input_queue_depth\":%g,",NODE_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"create_ant_packet_period\":%g,",`CREATE_ANT_PERIOD);
+				$fdisplay(file_id,"   \"pheromone_table_value_width\":%g,",`PH_TABLE_DEPTH);
+				$fdisplay(file_id,"   \"result_dir\":\"results/j_10/t_hotspot/r_odd_even/s_aco/\",");
+				$fdisplay(file_id,"   \"routing\":\"odd_even\",");
+				$fdisplay(file_id,"   \"selection\":\"aco\",");
+				$fdisplay(file_id,"   \"traffic\":\"hotspot\",");
+				$fdisplay(file_id,"   \"packet_injection_rate\":%g,",PACKET_RATE);
+				$fdisplay(file_id,"   \"aco_packet_injection_rate\":%g,",ANT_PACKET_RATE);
+				$fdisplay(file_id,"   \"hotspot_packet_injection_rate\":%g",HOTSPOT_PACKET_RATE);
+	         $fdisplay(file_id,"}");
 				$fclose(file_id);
 			end
 			end
@@ -2814,38 +3559,54 @@ module tb_network
 	*************************************************************************************************************************************/
 
 			if(PACKET_RATE == 20 && traffic_type == 3 && routing_type == 2 && selection_type == 2)begin
-            file_id = $fopen(
-"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_20/t_hotspot/r_odd_even/s_buffer_level/stats.txt");
 			   
-			if (f_time == `warmup_packets_num*20-1) begin
+			if (f_time == `warmup_packets_num*10-1) begin
 	
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
-				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
-				$fdisplay(file_id,"",);
-				
-				$fdisplay(file_id," -- All packets:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Normal packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Ant packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
-				$fdisplay(file_id,"");
-			
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_20/t_hotspot/r_odd_even/s_buffer_level/stats.json");
+				$fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+	         $fdisplay(file_id,"   \"throughput\":%g,",f_throughput_o_all);
+	         $fdisplay(file_id,"   \"num_packets_transmitted\":%g,",f_measure_total_i_packet_count_all);
+	         $fdisplay(file_id,"   \"num_packets_received\":%g,",f_measure_total_o_packet_count_all);
+	         $fdisplay(file_id,"   \"average_packet_delay\":%g,",f_average_latency_all);
+	         $fdisplay(file_id,"   \"max_packet_delay\":%g,",f_max_latency_all);
+	         $fdisplay(file_id,"   \"packet.throughput\":%g,",f_throughput_o_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_received\":%g,",f_measure_total_o_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.average_packet_delay\":%g,",f_average_latency_normal);
+	         $fdisplay(file_id,"   \"packet.max_packet_delay\":%g,",f_max_latency_normal);
+	         $fdisplay(file_id,"   \"acopacket.throughput\":%g,",f_throughput_o_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_received\":%g,",f_measure_total_o_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.average_packet_delay\":%g,",f_average_latency_ant);
+	         $fdisplay(file_id,"   \"acopacket.max_packet_delay\":%g",f_max_latency_ant);
+	         $fdisplay(file_id,"}");
+				$fclose(file_id);
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_20/t_hotspot/r_odd_even/s_buffer_level/config.json");
+            $fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"num_nodes\":%g,",`NODES);
+				$fdisplay(file_id,"   \"warmup_packets\":%g,",WARMUP_PACKETS);
+				$fdisplay(file_id,"   \"measure_packets\":%g,",MEASURE_PACKETS);
+				$fdisplay(file_id,"   \"drain_packets\":%g,",DRAIN_PACKETS);
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+				$fdisplay(file_id,"   \"router_input_queue_depth\":%g,",`INPUT_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"PEnode_input_queue_depth\":%g,",NODE_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"create_ant_packet_period\":%g,",`CREATE_ANT_PERIOD);
+				$fdisplay(file_id,"   \"pheromone_table_value_width\":%g,",`PH_TABLE_DEPTH);
+				$fdisplay(file_id,"   \"result_dir\":\"results/j_10/t_hotspot/r_odd_even/s_aco/\",");
+				$fdisplay(file_id,"   \"routing\":\"odd_even\",");
+				$fdisplay(file_id,"   \"selection\":\"aco\",");
+				$fdisplay(file_id,"   \"traffic\":\"hotspot\",");
+				$fdisplay(file_id,"   \"packet_injection_rate\":%g,",PACKET_RATE);
+				$fdisplay(file_id,"   \"aco_packet_injection_rate\":%g,",ANT_PACKET_RATE);
+				$fdisplay(file_id,"   \"hotspot_packet_injection_rate\":%g",HOTSPOT_PACKET_RATE);
+	         $fdisplay(file_id,"}");
 				$fclose(file_id);
 			end
 			end
@@ -2855,38 +3616,54 @@ module tb_network
 	*************************************************************************************************************************************/
 
 			if(PACKET_RATE == 20 && traffic_type == 3 && routing_type == 2 && selection_type == 3)begin
-            file_id = $fopen(
-"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_20/t_hotspot/r_odd_even/s_aco/stats.txt");
 			   
-			if (f_time == `warmup_packets_num*20-1) begin
+			if (f_time == `warmup_packets_num*10-1) begin
 	
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
-				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
-				$fdisplay(file_id,"",);
-				
-				$fdisplay(file_id," -- All packets:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Normal packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Ant packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
-				$fdisplay(file_id,"");
-			
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_20/t_hotspot/r_odd_even/s_aco/stats.json");
+				$fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+	         $fdisplay(file_id,"   \"throughput\":%g,",f_throughput_o_all);
+	         $fdisplay(file_id,"   \"num_packets_transmitted\":%g,",f_measure_total_i_packet_count_all);
+	         $fdisplay(file_id,"   \"num_packets_received\":%g,",f_measure_total_o_packet_count_all);
+	         $fdisplay(file_id,"   \"average_packet_delay\":%g,",f_average_latency_all);
+	         $fdisplay(file_id,"   \"max_packet_delay\":%g,",f_max_latency_all);
+	         $fdisplay(file_id,"   \"packet.throughput\":%g,",f_throughput_o_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_received\":%g,",f_measure_total_o_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.average_packet_delay\":%g,",f_average_latency_normal);
+	         $fdisplay(file_id,"   \"packet.max_packet_delay\":%g,",f_max_latency_normal);
+	         $fdisplay(file_id,"   \"acopacket.throughput\":%g,",f_throughput_o_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_received\":%g,",f_measure_total_o_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.average_packet_delay\":%g,",f_average_latency_ant);
+	         $fdisplay(file_id,"   \"acopacket.max_packet_delay\":%g",f_max_latency_ant);
+	         $fdisplay(file_id,"}");
+				$fclose(file_id);
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_20/t_hotspot/r_odd_even/s_aco/config.json");
+            $fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"num_nodes\":%g,",`NODES);
+				$fdisplay(file_id,"   \"warmup_packets\":%g,",WARMUP_PACKETS);
+				$fdisplay(file_id,"   \"measure_packets\":%g,",MEASURE_PACKETS);
+				$fdisplay(file_id,"   \"drain_packets\":%g,",DRAIN_PACKETS);
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+				$fdisplay(file_id,"   \"router_input_queue_depth\":%g,",`INPUT_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"PEnode_input_queue_depth\":%g,",NODE_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"create_ant_packet_period\":%g,",`CREATE_ANT_PERIOD);
+				$fdisplay(file_id,"   \"pheromone_table_value_width\":%g,",`PH_TABLE_DEPTH);
+				$fdisplay(file_id,"   \"result_dir\":\"results/j_10/t_hotspot/r_odd_even/s_aco/\",");
+				$fdisplay(file_id,"   \"routing\":\"odd_even\",");
+				$fdisplay(file_id,"   \"selection\":\"aco\",");
+				$fdisplay(file_id,"   \"traffic\":\"hotspot\",");
+				$fdisplay(file_id,"   \"packet_injection_rate\":%g,",PACKET_RATE);
+				$fdisplay(file_id,"   \"aco_packet_injection_rate\":%g,",ANT_PACKET_RATE);
+				$fdisplay(file_id,"   \"hotspot_packet_injection_rate\":%g",HOTSPOT_PACKET_RATE);
+	         $fdisplay(file_id,"}");
 				$fclose(file_id);
 			end
 			end
@@ -2904,38 +3681,54 @@ module tb_network
 
 	*************************************************************************************************************************************/
 			if(PACKET_RATE == 50 && traffic_type == 1 && routing_type == 1 && selection_type == 1)begin
-            file_id = $fopen(
-"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_50/t_uniform/r_xy/s_random/stats.txt");
 			   
-			if (f_time == `warmup_packets_num*20-1) begin
+			if (f_time == `warmup_packets_num*10-1) begin
 	
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
-				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
-				$fdisplay(file_id,"",);
-				
-				$fdisplay(file_id," -- All packets:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Normal packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Ant packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
-				$fdisplay(file_id,"");
-			
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_50/t_uniform/r_xy/s_random/stats.json");
+				$fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+	         $fdisplay(file_id,"   \"throughput\":%g,",f_throughput_o_all);
+	         $fdisplay(file_id,"   \"num_packets_transmitted\":%g,",f_measure_total_i_packet_count_all);
+	         $fdisplay(file_id,"   \"num_packets_received\":%g,",f_measure_total_o_packet_count_all);
+	         $fdisplay(file_id,"   \"average_packet_delay\":%g,",f_average_latency_all);
+	         $fdisplay(file_id,"   \"max_packet_delay\":%g,",f_max_latency_all);
+	         $fdisplay(file_id,"   \"packet.throughput\":%g,",f_throughput_o_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_received\":%g,",f_measure_total_o_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.average_packet_delay\":%g,",f_average_latency_normal);
+	         $fdisplay(file_id,"   \"packet.max_packet_delay\":%g,",f_max_latency_normal);
+	         $fdisplay(file_id,"   \"acopacket.throughput\":%g,",f_throughput_o_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_received\":%g,",f_measure_total_o_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.average_packet_delay\":%g,",f_average_latency_ant);
+	         $fdisplay(file_id,"   \"acopacket.max_packet_delay\":%g",f_max_latency_ant);
+	         $fdisplay(file_id,"}");
+				$fclose(file_id);
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_50/t_uniform/r_xy/s_random/config.json");
+            $fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"num_nodes\":%g,",`NODES);
+				$fdisplay(file_id,"   \"warmup_packets\":%g,",WARMUP_PACKETS);
+				$fdisplay(file_id,"   \"measure_packets\":%g,",MEASURE_PACKETS);
+				$fdisplay(file_id,"   \"drain_packets\":%g,",DRAIN_PACKETS);
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+				$fdisplay(file_id,"   \"router_input_queue_depth\":%g,",`INPUT_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"PEnode_input_queue_depth\":%g,",NODE_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"create_ant_packet_period\":%g,",`CREATE_ANT_PERIOD);
+				$fdisplay(file_id,"   \"pheromone_table_value_width\":%g,",`PH_TABLE_DEPTH);
+				$fdisplay(file_id,"   \"result_dir\":\"results/j_10/t_hotspot/r_odd_even/s_aco/\",");
+				$fdisplay(file_id,"   \"routing\":\"odd_even\",");
+				$fdisplay(file_id,"   \"selection\":\"aco\",");
+				$fdisplay(file_id,"   \"traffic\":\"hotspot\",");
+				$fdisplay(file_id,"   \"packet_injection_rate\":%g,",PACKET_RATE);
+				$fdisplay(file_id,"   \"aco_packet_injection_rate\":%g,",ANT_PACKET_RATE);
+				$fdisplay(file_id,"   \"hotspot_packet_injection_rate\":%g",HOTSPOT_PACKET_RATE);
+	         $fdisplay(file_id,"}");
 				$fclose(file_id);
 			end
 			end
@@ -2945,38 +3738,54 @@ module tb_network
 	*************************************************************************************************************************************/
 
 			if(PACKET_RATE == 50 && traffic_type == 1 && routing_type == 2 && selection_type == 1)begin
-            file_id = $fopen(
-"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_50/t_uniform/r_odd_even/s_random/stats.txt");
 			   
-			if (f_time == `warmup_packets_num*20-1) begin
+			if (f_time == `warmup_packets_num*10-1) begin
 	
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
-				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
-				$fdisplay(file_id,"",);
-				
-				$fdisplay(file_id," -- All packets:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Normal packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Ant packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
-				$fdisplay(file_id,"");
-			
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_50/t_uniform/r_odd_even/s_random/stats.json");
+				$fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+	         $fdisplay(file_id,"   \"throughput\":%g,",f_throughput_o_all);
+	         $fdisplay(file_id,"   \"num_packets_transmitted\":%g,",f_measure_total_i_packet_count_all);
+	         $fdisplay(file_id,"   \"num_packets_received\":%g,",f_measure_total_o_packet_count_all);
+	         $fdisplay(file_id,"   \"average_packet_delay\":%g,",f_average_latency_all);
+	         $fdisplay(file_id,"   \"max_packet_delay\":%g,",f_max_latency_all);
+	         $fdisplay(file_id,"   \"packet.throughput\":%g,",f_throughput_o_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_received\":%g,",f_measure_total_o_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.average_packet_delay\":%g,",f_average_latency_normal);
+	         $fdisplay(file_id,"   \"packet.max_packet_delay\":%g,",f_max_latency_normal);
+	         $fdisplay(file_id,"   \"acopacket.throughput\":%g,",f_throughput_o_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_received\":%g,",f_measure_total_o_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.average_packet_delay\":%g,",f_average_latency_ant);
+	         $fdisplay(file_id,"   \"acopacket.max_packet_delay\":%g",f_max_latency_ant);
+	         $fdisplay(file_id,"}");
+				$fclose(file_id);
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_50/t_uniform/r_odd_even/s_random/config.json");
+            $fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"num_nodes\":%g,",`NODES);
+				$fdisplay(file_id,"   \"warmup_packets\":%g,",WARMUP_PACKETS);
+				$fdisplay(file_id,"   \"measure_packets\":%g,",MEASURE_PACKETS);
+				$fdisplay(file_id,"   \"drain_packets\":%g,",DRAIN_PACKETS);
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+				$fdisplay(file_id,"   \"router_input_queue_depth\":%g,",`INPUT_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"PEnode_input_queue_depth\":%g,",NODE_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"create_ant_packet_period\":%g,",`CREATE_ANT_PERIOD);
+				$fdisplay(file_id,"   \"pheromone_table_value_width\":%g,",`PH_TABLE_DEPTH);
+				$fdisplay(file_id,"   \"result_dir\":\"results/j_10/t_hotspot/r_odd_even/s_aco/\",");
+				$fdisplay(file_id,"   \"routing\":\"odd_even\",");
+				$fdisplay(file_id,"   \"selection\":\"aco\",");
+				$fdisplay(file_id,"   \"traffic\":\"hotspot\",");
+				$fdisplay(file_id,"   \"packet_injection_rate\":%g,",PACKET_RATE);
+				$fdisplay(file_id,"   \"aco_packet_injection_rate\":%g,",ANT_PACKET_RATE);
+				$fdisplay(file_id,"   \"hotspot_packet_injection_rate\":%g",HOTSPOT_PACKET_RATE);
+	         $fdisplay(file_id,"}");
 				$fclose(file_id);
 			end
 			end
@@ -2986,38 +3795,54 @@ module tb_network
 	*************************************************************************************************************************************/
 
 			if(PACKET_RATE == 50 && traffic_type == 1 && routing_type == 2 && selection_type == 2)begin
-            file_id = $fopen(
-"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_50/t_uniform/r_odd_even/s_buffer_level/stats.txt");
 			   
-			if (f_time == `warmup_packets_num*20-1) begin
+			if (f_time == `warmup_packets_num*10-1) begin
 	
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
-				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
-				$fdisplay(file_id,"",);
-				
-				$fdisplay(file_id," -- All packets:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Normal packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Ant packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
-				$fdisplay(file_id,"");
-			
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_50/t_uniform/r_odd_even/s_buffer_level/stats.json");
+				$fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+	         $fdisplay(file_id,"   \"throughput\":%g,",f_throughput_o_all);
+	         $fdisplay(file_id,"   \"num_packets_transmitted\":%g,",f_measure_total_i_packet_count_all);
+	         $fdisplay(file_id,"   \"num_packets_received\":%g,",f_measure_total_o_packet_count_all);
+	         $fdisplay(file_id,"   \"average_packet_delay\":%g,",f_average_latency_all);
+	         $fdisplay(file_id,"   \"max_packet_delay\":%g,",f_max_latency_all);
+	         $fdisplay(file_id,"   \"packet.throughput\":%g,",f_throughput_o_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_received\":%g,",f_measure_total_o_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.average_packet_delay\":%g,",f_average_latency_normal);
+	         $fdisplay(file_id,"   \"packet.max_packet_delay\":%g,",f_max_latency_normal);
+	         $fdisplay(file_id,"   \"acopacket.throughput\":%g,",f_throughput_o_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_received\":%g,",f_measure_total_o_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.average_packet_delay\":%g,",f_average_latency_ant);
+	         $fdisplay(file_id,"   \"acopacket.max_packet_delay\":%g",f_max_latency_ant);
+	         $fdisplay(file_id,"}");
+				$fclose(file_id);
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_50/t_uniform/r_odd_even/s_buffer_level/config.json");
+            $fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"num_nodes\":%g,",`NODES);
+				$fdisplay(file_id,"   \"warmup_packets\":%g,",WARMUP_PACKETS);
+				$fdisplay(file_id,"   \"measure_packets\":%g,",MEASURE_PACKETS);
+				$fdisplay(file_id,"   \"drain_packets\":%g,",DRAIN_PACKETS);
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+				$fdisplay(file_id,"   \"router_input_queue_depth\":%g,",`INPUT_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"PEnode_input_queue_depth\":%g,",NODE_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"create_ant_packet_period\":%g,",`CREATE_ANT_PERIOD);
+				$fdisplay(file_id,"   \"pheromone_table_value_width\":%g,",`PH_TABLE_DEPTH);
+				$fdisplay(file_id,"   \"result_dir\":\"results/j_10/t_hotspot/r_odd_even/s_aco/\",");
+				$fdisplay(file_id,"   \"routing\":\"odd_even\",");
+				$fdisplay(file_id,"   \"selection\":\"aco\",");
+				$fdisplay(file_id,"   \"traffic\":\"hotspot\",");
+				$fdisplay(file_id,"   \"packet_injection_rate\":%g,",PACKET_RATE);
+				$fdisplay(file_id,"   \"aco_packet_injection_rate\":%g,",ANT_PACKET_RATE);
+				$fdisplay(file_id,"   \"hotspot_packet_injection_rate\":%g",HOTSPOT_PACKET_RATE);
+	         $fdisplay(file_id,"}");
 				$fclose(file_id);
 			end
 			end
@@ -3027,38 +3852,54 @@ module tb_network
 	*************************************************************************************************************************************/
 
 			if(PACKET_RATE == 50 && traffic_type == 1 && routing_type == 2 && selection_type == 3)begin
-            file_id = $fopen(
-"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_50/t_uniform/r_odd_even/s_aco/stats.txt");
 			   
-			if (f_time == `warmup_packets_num*20-1) begin
+			if (f_time == `warmup_packets_num*10-1) begin
 	
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
-				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
-				$fdisplay(file_id,"",);
-				
-				$fdisplay(file_id," -- All packets:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Normal packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Ant packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
-				$fdisplay(file_id,"");
-			
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_50/t_uniform/r_odd_even/s_aco/stats.json");
+				$fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+	         $fdisplay(file_id,"   \"throughput\":%g,",f_throughput_o_all);
+	         $fdisplay(file_id,"   \"num_packets_transmitted\":%g,",f_measure_total_i_packet_count_all);
+	         $fdisplay(file_id,"   \"num_packets_received\":%g,",f_measure_total_o_packet_count_all);
+	         $fdisplay(file_id,"   \"average_packet_delay\":%g,",f_average_latency_all);
+	         $fdisplay(file_id,"   \"max_packet_delay\":%g,",f_max_latency_all);
+	         $fdisplay(file_id,"   \"packet.throughput\":%g,",f_throughput_o_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_received\":%g,",f_measure_total_o_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.average_packet_delay\":%g,",f_average_latency_normal);
+	         $fdisplay(file_id,"   \"packet.max_packet_delay\":%g,",f_max_latency_normal);
+	         $fdisplay(file_id,"   \"acopacket.throughput\":%g,",f_throughput_o_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_received\":%g,",f_measure_total_o_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.average_packet_delay\":%g,",f_average_latency_ant);
+	         $fdisplay(file_id,"   \"acopacket.max_packet_delay\":%g",f_max_latency_ant);
+	         $fdisplay(file_id,"}");
+				$fclose(file_id);
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_50/t_uniform/r_odd_even/s_aco/config.json");
+            $fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"num_nodes\":%g,",`NODES);
+				$fdisplay(file_id,"   \"warmup_packets\":%g,",WARMUP_PACKETS);
+				$fdisplay(file_id,"   \"measure_packets\":%g,",MEASURE_PACKETS);
+				$fdisplay(file_id,"   \"drain_packets\":%g,",DRAIN_PACKETS);
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+				$fdisplay(file_id,"   \"router_input_queue_depth\":%g,",`INPUT_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"PEnode_input_queue_depth\":%g,",NODE_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"create_ant_packet_period\":%g,",`CREATE_ANT_PERIOD);
+				$fdisplay(file_id,"   \"pheromone_table_value_width\":%g,",`PH_TABLE_DEPTH);
+				$fdisplay(file_id,"   \"result_dir\":\"results/j_10/t_hotspot/r_odd_even/s_aco/\",");
+				$fdisplay(file_id,"   \"routing\":\"odd_even\",");
+				$fdisplay(file_id,"   \"selection\":\"aco\",");
+				$fdisplay(file_id,"   \"traffic\":\"hotspot\",");
+				$fdisplay(file_id,"   \"packet_injection_rate\":%g,",PACKET_RATE);
+				$fdisplay(file_id,"   \"aco_packet_injection_rate\":%g,",ANT_PACKET_RATE);
+				$fdisplay(file_id,"   \"hotspot_packet_injection_rate\":%g",HOTSPOT_PACKET_RATE);
+	         $fdisplay(file_id,"}");
 				$fclose(file_id);
 			end
 			end
@@ -3067,38 +3908,54 @@ module tb_network
 
 	*************************************************************************************************************************************/
 			if(PACKET_RATE == 50 && traffic_type == 2 && routing_type == 1 && selection_type == 1)begin
-            file_id = $fopen(
-"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_50/t_transpose/r_xy/s_random/stats.txt");
 			   
-			if (f_time == `warmup_packets_num*20-1) begin
+			if (f_time == `warmup_packets_num*10-1) begin
 	
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
-				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
-				$fdisplay(file_id,"",);
-				
-				$fdisplay(file_id," -- All packets:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Normal packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Ant packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
-				$fdisplay(file_id,"");
-			
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_50/t_transpose/r_xy/s_random/stats.json");
+				$fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+	         $fdisplay(file_id,"   \"throughput\":%g,",f_throughput_o_all);
+	         $fdisplay(file_id,"   \"num_packets_transmitted\":%g,",f_measure_total_i_packet_count_all);
+	         $fdisplay(file_id,"   \"num_packets_received\":%g,",f_measure_total_o_packet_count_all);
+	         $fdisplay(file_id,"   \"average_packet_delay\":%g,",f_average_latency_all);
+	         $fdisplay(file_id,"   \"max_packet_delay\":%g,",f_max_latency_all);
+	         $fdisplay(file_id,"   \"packet.throughput\":%g,",f_throughput_o_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_received\":%g,",f_measure_total_o_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.average_packet_delay\":%g,",f_average_latency_normal);
+	         $fdisplay(file_id,"   \"packet.max_packet_delay\":%g,",f_max_latency_normal);
+	         $fdisplay(file_id,"   \"acopacket.throughput\":%g,",f_throughput_o_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_received\":%g,",f_measure_total_o_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.average_packet_delay\":%g,",f_average_latency_ant);
+	         $fdisplay(file_id,"   \"acopacket.max_packet_delay\":%g",f_max_latency_ant);
+	         $fdisplay(file_id,"}");
+				$fclose(file_id);
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_50/t_transpose/r_xy/s_random/config.json");
+            $fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"num_nodes\":%g,",`NODES);
+				$fdisplay(file_id,"   \"warmup_packets\":%g,",WARMUP_PACKETS);
+				$fdisplay(file_id,"   \"measure_packets\":%g,",MEASURE_PACKETS);
+				$fdisplay(file_id,"   \"drain_packets\":%g,",DRAIN_PACKETS);
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+				$fdisplay(file_id,"   \"router_input_queue_depth\":%g,",`INPUT_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"PEnode_input_queue_depth\":%g,",NODE_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"create_ant_packet_period\":%g,",`CREATE_ANT_PERIOD);
+				$fdisplay(file_id,"   \"pheromone_table_value_width\":%g,",`PH_TABLE_DEPTH);
+				$fdisplay(file_id,"   \"result_dir\":\"results/j_10/t_hotspot/r_odd_even/s_aco/\",");
+				$fdisplay(file_id,"   \"routing\":\"odd_even\",");
+				$fdisplay(file_id,"   \"selection\":\"aco\",");
+				$fdisplay(file_id,"   \"traffic\":\"hotspot\",");
+				$fdisplay(file_id,"   \"packet_injection_rate\":%g,",PACKET_RATE);
+				$fdisplay(file_id,"   \"aco_packet_injection_rate\":%g,",ANT_PACKET_RATE);
+				$fdisplay(file_id,"   \"hotspot_packet_injection_rate\":%g",HOTSPOT_PACKET_RATE);
+	         $fdisplay(file_id,"}");
 				$fclose(file_id);
 			end
 			end
@@ -3108,38 +3965,54 @@ module tb_network
 	*************************************************************************************************************************************/
 
 			if(PACKET_RATE == 50 && traffic_type == 2 && routing_type == 2 && selection_type == 1)begin
-            file_id = $fopen(
-"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_50/t_transpose/r_odd_even/s_random/stats.txt");
 			   
-			if (f_time == `warmup_packets_num*20-1) begin
+			if (f_time == `warmup_packets_num*10-1) begin
 	
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
-				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
-				$fdisplay(file_id,"",);
-				
-				$fdisplay(file_id," -- All packets:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Normal packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Ant packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
-				$fdisplay(file_id,"");
-			
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_50/t_transpose/r_odd_even/s_random/stats.json");
+				$fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+	         $fdisplay(file_id,"   \"throughput\":%g,",f_throughput_o_all);
+	         $fdisplay(file_id,"   \"num_packets_transmitted\":%g,",f_measure_total_i_packet_count_all);
+	         $fdisplay(file_id,"   \"num_packets_received\":%g,",f_measure_total_o_packet_count_all);
+	         $fdisplay(file_id,"   \"average_packet_delay\":%g,",f_average_latency_all);
+	         $fdisplay(file_id,"   \"max_packet_delay\":%g,",f_max_latency_all);
+	         $fdisplay(file_id,"   \"packet.throughput\":%g,",f_throughput_o_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_received\":%g,",f_measure_total_o_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.average_packet_delay\":%g,",f_average_latency_normal);
+	         $fdisplay(file_id,"   \"packet.max_packet_delay\":%g,",f_max_latency_normal);
+	         $fdisplay(file_id,"   \"acopacket.throughput\":%g,",f_throughput_o_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_received\":%g,",f_measure_total_o_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.average_packet_delay\":%g,",f_average_latency_ant);
+	         $fdisplay(file_id,"   \"acopacket.max_packet_delay\":%g",f_max_latency_ant);
+	         $fdisplay(file_id,"}");
+				$fclose(file_id);
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_50/t_transpose/r_odd_even/s_random/config.json");
+            $fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"num_nodes\":%g,",`NODES);
+				$fdisplay(file_id,"   \"warmup_packets\":%g,",WARMUP_PACKETS);
+				$fdisplay(file_id,"   \"measure_packets\":%g,",MEASURE_PACKETS);
+				$fdisplay(file_id,"   \"drain_packets\":%g,",DRAIN_PACKETS);
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+				$fdisplay(file_id,"   \"router_input_queue_depth\":%g,",`INPUT_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"PEnode_input_queue_depth\":%g,",NODE_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"create_ant_packet_period\":%g,",`CREATE_ANT_PERIOD);
+				$fdisplay(file_id,"   \"pheromone_table_value_width\":%g,",`PH_TABLE_DEPTH);
+				$fdisplay(file_id,"   \"result_dir\":\"results/j_10/t_hotspot/r_odd_even/s_aco/\",");
+				$fdisplay(file_id,"   \"routing\":\"odd_even\",");
+				$fdisplay(file_id,"   \"selection\":\"aco\",");
+				$fdisplay(file_id,"   \"traffic\":\"hotspot\",");
+				$fdisplay(file_id,"   \"packet_injection_rate\":%g,",PACKET_RATE);
+				$fdisplay(file_id,"   \"aco_packet_injection_rate\":%g,",ANT_PACKET_RATE);
+				$fdisplay(file_id,"   \"hotspot_packet_injection_rate\":%g",HOTSPOT_PACKET_RATE);
+	         $fdisplay(file_id,"}");
 				$fclose(file_id);
 			end
 			end
@@ -3149,38 +4022,54 @@ module tb_network
 	*************************************************************************************************************************************/
 
 			if(PACKET_RATE == 50 && traffic_type == 2 && routing_type == 2 && selection_type == 2)begin
-            file_id = $fopen(
-"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_50/t_transpose/r_odd_even/s_buffer_level/stats.txt");
 			   
-			if (f_time == `warmup_packets_num*20-1) begin
+			if (f_time == `warmup_packets_num*10-1) begin
 	
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
-				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
-				$fdisplay(file_id,"",);
-				
-				$fdisplay(file_id," -- All packets:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Normal packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Ant packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
-				$fdisplay(file_id,"");
-			
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_50/t_transpose/r_odd_even/s_buffer_level/stats.json");
+				$fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+	         $fdisplay(file_id,"   \"throughput\":%g,",f_throughput_o_all);
+	         $fdisplay(file_id,"   \"num_packets_transmitted\":%g,",f_measure_total_i_packet_count_all);
+	         $fdisplay(file_id,"   \"num_packets_received\":%g,",f_measure_total_o_packet_count_all);
+	         $fdisplay(file_id,"   \"average_packet_delay\":%g,",f_average_latency_all);
+	         $fdisplay(file_id,"   \"max_packet_delay\":%g,",f_max_latency_all);
+	         $fdisplay(file_id,"   \"packet.throughput\":%g,",f_throughput_o_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_received\":%g,",f_measure_total_o_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.average_packet_delay\":%g,",f_average_latency_normal);
+	         $fdisplay(file_id,"   \"packet.max_packet_delay\":%g,",f_max_latency_normal);
+	         $fdisplay(file_id,"   \"acopacket.throughput\":%g,",f_throughput_o_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_received\":%g,",f_measure_total_o_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.average_packet_delay\":%g,",f_average_latency_ant);
+	         $fdisplay(file_id,"   \"acopacket.max_packet_delay\":%g",f_max_latency_ant);
+	         $fdisplay(file_id,"}");
+				$fclose(file_id);
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_50/t_transpose/r_odd_even/s_buffer_level/config.json");
+            $fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"num_nodes\":%g,",`NODES);
+				$fdisplay(file_id,"   \"warmup_packets\":%g,",WARMUP_PACKETS);
+				$fdisplay(file_id,"   \"measure_packets\":%g,",MEASURE_PACKETS);
+				$fdisplay(file_id,"   \"drain_packets\":%g,",DRAIN_PACKETS);
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+				$fdisplay(file_id,"   \"router_input_queue_depth\":%g,",`INPUT_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"PEnode_input_queue_depth\":%g,",NODE_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"create_ant_packet_period\":%g,",`CREATE_ANT_PERIOD);
+				$fdisplay(file_id,"   \"pheromone_table_value_width\":%g,",`PH_TABLE_DEPTH);
+				$fdisplay(file_id,"   \"result_dir\":\"results/j_10/t_hotspot/r_odd_even/s_aco/\",");
+				$fdisplay(file_id,"   \"routing\":\"odd_even\",");
+				$fdisplay(file_id,"   \"selection\":\"aco\",");
+				$fdisplay(file_id,"   \"traffic\":\"hotspot\",");
+				$fdisplay(file_id,"   \"packet_injection_rate\":%g,",PACKET_RATE);
+				$fdisplay(file_id,"   \"aco_packet_injection_rate\":%g,",ANT_PACKET_RATE);
+				$fdisplay(file_id,"   \"hotspot_packet_injection_rate\":%g",HOTSPOT_PACKET_RATE);
+	         $fdisplay(file_id,"}");
 				$fclose(file_id);
 			end
 			end
@@ -3190,38 +4079,54 @@ module tb_network
 	*************************************************************************************************************************************/
 
 			if(PACKET_RATE == 50 && traffic_type == 2 && routing_type == 2 && selection_type == 3)begin
-            file_id = $fopen(
-"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_50/t_transpose/r_odd_even/s_aco/stats.txt");
 			   
-			if (f_time == `warmup_packets_num*20-1) begin
+			if (f_time == `warmup_packets_num*10-1) begin
 	
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
-				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
-				$fdisplay(file_id,"",);
-				
-				$fdisplay(file_id," -- All packets:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Normal packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Ant packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
-				$fdisplay(file_id,"");
-			
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_50/t_transpose/r_odd_even/s_aco/stats.json");
+				$fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+	         $fdisplay(file_id,"   \"throughput\":%g,",f_throughput_o_all);
+	         $fdisplay(file_id,"   \"num_packets_transmitted\":%g,",f_measure_total_i_packet_count_all);
+	         $fdisplay(file_id,"   \"num_packets_received\":%g,",f_measure_total_o_packet_count_all);
+	         $fdisplay(file_id,"   \"average_packet_delay\":%g,",f_average_latency_all);
+	         $fdisplay(file_id,"   \"max_packet_delay\":%g,",f_max_latency_all);
+	         $fdisplay(file_id,"   \"packet.throughput\":%g,",f_throughput_o_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_received\":%g,",f_measure_total_o_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.average_packet_delay\":%g,",f_average_latency_normal);
+	         $fdisplay(file_id,"   \"packet.max_packet_delay\":%g,",f_max_latency_normal);
+	         $fdisplay(file_id,"   \"acopacket.throughput\":%g,",f_throughput_o_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_received\":%g,",f_measure_total_o_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.average_packet_delay\":%g,",f_average_latency_ant);
+	         $fdisplay(file_id,"   \"acopacket.max_packet_delay\":%g",f_max_latency_ant);
+	         $fdisplay(file_id,"}");
+				$fclose(file_id);
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_50/t_transpose/r_odd_even/s_aco/config.json");
+            $fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"num_nodes\":%g,",`NODES);
+				$fdisplay(file_id,"   \"warmup_packets\":%g,",WARMUP_PACKETS);
+				$fdisplay(file_id,"   \"measure_packets\":%g,",MEASURE_PACKETS);
+				$fdisplay(file_id,"   \"drain_packets\":%g,",DRAIN_PACKETS);
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+				$fdisplay(file_id,"   \"router_input_queue_depth\":%g,",`INPUT_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"PEnode_input_queue_depth\":%g,",NODE_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"create_ant_packet_period\":%g,",`CREATE_ANT_PERIOD);
+				$fdisplay(file_id,"   \"pheromone_table_value_width\":%g,",`PH_TABLE_DEPTH);
+				$fdisplay(file_id,"   \"result_dir\":\"results/j_10/t_hotspot/r_odd_even/s_aco/\",");
+				$fdisplay(file_id,"   \"routing\":\"odd_even\",");
+				$fdisplay(file_id,"   \"selection\":\"aco\",");
+				$fdisplay(file_id,"   \"traffic\":\"hotspot\",");
+				$fdisplay(file_id,"   \"packet_injection_rate\":%g,",PACKET_RATE);
+				$fdisplay(file_id,"   \"aco_packet_injection_rate\":%g,",ANT_PACKET_RATE);
+				$fdisplay(file_id,"   \"hotspot_packet_injection_rate\":%g",HOTSPOT_PACKET_RATE);
+	         $fdisplay(file_id,"}");
 				$fclose(file_id);
 			end
 			end
@@ -3230,38 +4135,54 @@ module tb_network
 
 	*************************************************************************************************************************************/
 			if(PACKET_RATE == 50 && traffic_type == 3 && routing_type == 1 && selection_type == 1)begin
-            file_id = $fopen(
-"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_50/t_hotspot/r_xy/s_random/stats.txt");
 			   
-			if (f_time == `warmup_packets_num*20-1) begin
+			if (f_time == `warmup_packets_num*10-1) begin
 	
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
-				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
-				$fdisplay(file_id,"",);
-				
-				$fdisplay(file_id," -- All packets:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Normal packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Ant packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
-				$fdisplay(file_id,"");
-			
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_50/t_hotspot/r_xy/s_random/stats.json");
+				$fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+	         $fdisplay(file_id,"   \"throughput\":%g,",f_throughput_o_all);
+	         $fdisplay(file_id,"   \"num_packets_transmitted\":%g,",f_measure_total_i_packet_count_all);
+	         $fdisplay(file_id,"   \"num_packets_received\":%g,",f_measure_total_o_packet_count_all);
+	         $fdisplay(file_id,"   \"average_packet_delay\":%g,",f_average_latency_all);
+	         $fdisplay(file_id,"   \"max_packet_delay\":%g,",f_max_latency_all);
+	         $fdisplay(file_id,"   \"packet.throughput\":%g,",f_throughput_o_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_received\":%g,",f_measure_total_o_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.average_packet_delay\":%g,",f_average_latency_normal);
+	         $fdisplay(file_id,"   \"packet.max_packet_delay\":%g,",f_max_latency_normal);
+	         $fdisplay(file_id,"   \"acopacket.throughput\":%g,",f_throughput_o_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_received\":%g,",f_measure_total_o_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.average_packet_delay\":%g,",f_average_latency_ant);
+	         $fdisplay(file_id,"   \"acopacket.max_packet_delay\":%g",f_max_latency_ant);
+	         $fdisplay(file_id,"}");
+				$fclose(file_id);
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_50/t_hotspot/r_xy/s_random/config.json");
+            $fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"num_nodes\":%g,",`NODES);
+				$fdisplay(file_id,"   \"warmup_packets\":%g,",WARMUP_PACKETS);
+				$fdisplay(file_id,"   \"measure_packets\":%g,",MEASURE_PACKETS);
+				$fdisplay(file_id,"   \"drain_packets\":%g,",DRAIN_PACKETS);
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+				$fdisplay(file_id,"   \"router_input_queue_depth\":%g,",`INPUT_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"PEnode_input_queue_depth\":%g,",NODE_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"create_ant_packet_period\":%g,",`CREATE_ANT_PERIOD);
+				$fdisplay(file_id,"   \"pheromone_table_value_width\":%g,",`PH_TABLE_DEPTH);
+				$fdisplay(file_id,"   \"result_dir\":\"results/j_10/t_hotspot/r_odd_even/s_aco/\",");
+				$fdisplay(file_id,"   \"routing\":\"odd_even\",");
+				$fdisplay(file_id,"   \"selection\":\"aco\",");
+				$fdisplay(file_id,"   \"traffic\":\"hotspot\",");
+				$fdisplay(file_id,"   \"packet_injection_rate\":%g,",PACKET_RATE);
+				$fdisplay(file_id,"   \"aco_packet_injection_rate\":%g,",ANT_PACKET_RATE);
+				$fdisplay(file_id,"   \"hotspot_packet_injection_rate\":%g",HOTSPOT_PACKET_RATE);
+	         $fdisplay(file_id,"}");
 				$fclose(file_id);
 			end
 			end
@@ -3271,38 +4192,54 @@ module tb_network
 	*************************************************************************************************************************************/
 
 			if(PACKET_RATE == 50 && traffic_type == 3 && routing_type == 2 && selection_type == 1)begin
-            file_id = $fopen(
-"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_50/t_hotspot/r_odd_even/s_random/stats.txt");
 			   
-			if (f_time == `warmup_packets_num*20-1) begin
+			if (f_time == `warmup_packets_num*10-1) begin
 	
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
-				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
-				$fdisplay(file_id,"",);
-				
-				$fdisplay(file_id," -- All packets:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Normal packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Ant packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
-				$fdisplay(file_id,"");
-			
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_50/t_hotspot/r_odd_even/s_random/stats.json");
+				$fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+	         $fdisplay(file_id,"   \"throughput\":%g,",f_throughput_o_all);
+	         $fdisplay(file_id,"   \"num_packets_transmitted\":%g,",f_measure_total_i_packet_count_all);
+	         $fdisplay(file_id,"   \"num_packets_received\":%g,",f_measure_total_o_packet_count_all);
+	         $fdisplay(file_id,"   \"average_packet_delay\":%g,",f_average_latency_all);
+	         $fdisplay(file_id,"   \"max_packet_delay\":%g,",f_max_latency_all);
+	         $fdisplay(file_id,"   \"packet.throughput\":%g,",f_throughput_o_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_received\":%g,",f_measure_total_o_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.average_packet_delay\":%g,",f_average_latency_normal);
+	         $fdisplay(file_id,"   \"packet.max_packet_delay\":%g,",f_max_latency_normal);
+	         $fdisplay(file_id,"   \"acopacket.throughput\":%g,",f_throughput_o_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_received\":%g,",f_measure_total_o_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.average_packet_delay\":%g,",f_average_latency_ant);
+	         $fdisplay(file_id,"   \"acopacket.max_packet_delay\":%g",f_max_latency_ant);
+	         $fdisplay(file_id,"}");
+				$fclose(file_id);
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_50/t_hotspot/r_odd_even/s_random/config.json");
+            $fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"num_nodes\":%g,",`NODES);
+				$fdisplay(file_id,"   \"warmup_packets\":%g,",WARMUP_PACKETS);
+				$fdisplay(file_id,"   \"measure_packets\":%g,",MEASURE_PACKETS);
+				$fdisplay(file_id,"   \"drain_packets\":%g,",DRAIN_PACKETS);
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+				$fdisplay(file_id,"   \"router_input_queue_depth\":%g,",`INPUT_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"PEnode_input_queue_depth\":%g,",NODE_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"create_ant_packet_period\":%g,",`CREATE_ANT_PERIOD);
+				$fdisplay(file_id,"   \"pheromone_table_value_width\":%g,",`PH_TABLE_DEPTH);
+				$fdisplay(file_id,"   \"result_dir\":\"results/j_10/t_hotspot/r_odd_even/s_aco/\",");
+				$fdisplay(file_id,"   \"routing\":\"odd_even\",");
+				$fdisplay(file_id,"   \"selection\":\"aco\",");
+				$fdisplay(file_id,"   \"traffic\":\"hotspot\",");
+				$fdisplay(file_id,"   \"packet_injection_rate\":%g,",PACKET_RATE);
+				$fdisplay(file_id,"   \"aco_packet_injection_rate\":%g,",ANT_PACKET_RATE);
+				$fdisplay(file_id,"   \"hotspot_packet_injection_rate\":%g",HOTSPOT_PACKET_RATE);
+	         $fdisplay(file_id,"}");
 				$fclose(file_id);
 			end
 			end
@@ -3312,38 +4249,54 @@ module tb_network
 	*************************************************************************************************************************************/
 
 			if(PACKET_RATE == 50 && traffic_type == 3 && routing_type == 2 && selection_type == 2)begin
-            file_id = $fopen(
-"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_50/t_hotspot/r_odd_even/s_buffer_level/stats.txt");
 			   
-			if (f_time == `warmup_packets_num*20-1) begin
+			if (f_time == `warmup_packets_num*10-1) begin
 	
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
-				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
-				$fdisplay(file_id,"",);
-				
-				$fdisplay(file_id," -- All packets:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Normal packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Ant packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
-				$fdisplay(file_id,"");
-			
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_50/t_hotspot/r_odd_even/s_buffer_level/stats.json");
+				$fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+	         $fdisplay(file_id,"   \"throughput\":%g,",f_throughput_o_all);
+	         $fdisplay(file_id,"   \"num_packets_transmitted\":%g,",f_measure_total_i_packet_count_all);
+	         $fdisplay(file_id,"   \"num_packets_received\":%g,",f_measure_total_o_packet_count_all);
+	         $fdisplay(file_id,"   \"average_packet_delay\":%g,",f_average_latency_all);
+	         $fdisplay(file_id,"   \"max_packet_delay\":%g,",f_max_latency_all);
+	         $fdisplay(file_id,"   \"packet.throughput\":%g,",f_throughput_o_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_received\":%g,",f_measure_total_o_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.average_packet_delay\":%g,",f_average_latency_normal);
+	         $fdisplay(file_id,"   \"packet.max_packet_delay\":%g,",f_max_latency_normal);
+	         $fdisplay(file_id,"   \"acopacket.throughput\":%g,",f_throughput_o_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_received\":%g,",f_measure_total_o_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.average_packet_delay\":%g,",f_average_latency_ant);
+	         $fdisplay(file_id,"   \"acopacket.max_packet_delay\":%g",f_max_latency_ant);
+	         $fdisplay(file_id,"}");
+				$fclose(file_id);
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_50/t_hotspot/r_odd_even/s_buffer_level/config.json");
+            $fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"num_nodes\":%g,",`NODES);
+				$fdisplay(file_id,"   \"warmup_packets\":%g,",WARMUP_PACKETS);
+				$fdisplay(file_id,"   \"measure_packets\":%g,",MEASURE_PACKETS);
+				$fdisplay(file_id,"   \"drain_packets\":%g,",DRAIN_PACKETS);
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+				$fdisplay(file_id,"   \"router_input_queue_depth\":%g,",`INPUT_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"PEnode_input_queue_depth\":%g,",NODE_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"create_ant_packet_period\":%g,",`CREATE_ANT_PERIOD);
+				$fdisplay(file_id,"   \"pheromone_table_value_width\":%g,",`PH_TABLE_DEPTH);
+				$fdisplay(file_id,"   \"result_dir\":\"results/j_10/t_hotspot/r_odd_even/s_aco/\",");
+				$fdisplay(file_id,"   \"routing\":\"odd_even\",");
+				$fdisplay(file_id,"   \"selection\":\"aco\",");
+				$fdisplay(file_id,"   \"traffic\":\"hotspot\",");
+				$fdisplay(file_id,"   \"packet_injection_rate\":%g,",PACKET_RATE);
+				$fdisplay(file_id,"   \"aco_packet_injection_rate\":%g,",ANT_PACKET_RATE);
+				$fdisplay(file_id,"   \"hotspot_packet_injection_rate\":%g",HOTSPOT_PACKET_RATE);
+	         $fdisplay(file_id,"}");
 				$fclose(file_id);
 			end
 			end
@@ -3353,38 +4306,54 @@ module tb_network
 	*************************************************************************************************************************************/
 
 			if(PACKET_RATE == 50 && traffic_type == 3 && routing_type == 2 && selection_type == 3)begin
-            file_id = $fopen(
-"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_50/t_hotspot/r_odd_even/s_aco/stats.txt");
 			   
-			if (f_time == `warmup_packets_num*20-1) begin
+			if (f_time == `warmup_packets_num*10-1) begin
 	
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," # Total cycles: %g",f_time_finish-f_time_begin);
-				$fdisplay(file_id," # Total packets transmitted: %g, # Total packets received: %g",f_total_i_data_count_all, f_total_o_data_count_all);
-				$fdisplay(file_id,"",);
-				
-				$fdisplay(file_id," -- All packets:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_all, f_measure_total_o_packet_count_all);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_all);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_all);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_all);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Normal packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-													  f_measure_total_i_packet_count_normal, f_measure_total_o_packet_count_normal);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_normal);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_normal);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_normal);
-				$fdisplay(file_id,"");
-				$fdisplay(file_id," -- Ant packet:");
-				$fdisplay(file_id,"Packets transmitted: %g, # Packets received: %g",
-														  f_measure_total_i_packet_count_ant, f_measure_total_o_packet_count_ant);
-				$fdisplay(file_id,"Throughput: %g packets/cycle/node", f_throughput_o_ant);
-				$fdisplay(file_id,"Average packet latency: %g cycles", f_average_latency_ant);
-				$fdisplay(file_id,"Max packet latency: %g cycles", f_max_latency_ant);
-				$fdisplay(file_id,"");
-			
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_50/t_hotspot/r_odd_even/s_aco/stats.json");
+				$fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+	         $fdisplay(file_id,"   \"throughput\":%g,",f_throughput_o_all);
+	         $fdisplay(file_id,"   \"num_packets_transmitted\":%g,",f_measure_total_i_packet_count_all);
+	         $fdisplay(file_id,"   \"num_packets_received\":%g,",f_measure_total_o_packet_count_all);
+	         $fdisplay(file_id,"   \"average_packet_delay\":%g,",f_average_latency_all);
+	         $fdisplay(file_id,"   \"max_packet_delay\":%g,",f_max_latency_all);
+	         $fdisplay(file_id,"   \"packet.throughput\":%g,",f_throughput_o_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.num_packets_received\":%g,",f_measure_total_o_packet_count_normal);
+	         $fdisplay(file_id,"   \"packet.average_packet_delay\":%g,",f_average_latency_normal);
+	         $fdisplay(file_id,"   \"packet.max_packet_delay\":%g,",f_max_latency_normal);
+	         $fdisplay(file_id,"   \"acopacket.throughput\":%g,",f_throughput_o_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_transmitted\":%g,",f_measure_total_i_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.num_packets_received\":%g,",f_measure_total_o_packet_count_ant);
+	         $fdisplay(file_id,"   \"acopacket.average_packet_delay\":%g,",f_average_latency_ant);
+	         $fdisplay(file_id,"   \"acopacket.max_packet_delay\":%g",f_max_latency_ant);
+	         $fdisplay(file_id,"}");
+				$fclose(file_id);
+            file_id = $fopen(
+"/media/jcq/e052d853-5bf0-41fb-9617-220923a0fe5f/Tools/FPGA/altera_lite/gh02-my_noc/my_noc/results/j_50/t_hotspot/r_odd_even/s_aco/config.json");
+            $fdisplay(file_id,"{");
+	         $fdisplay(file_id,"   \"num_nodes\":%g,",`NODES);
+				$fdisplay(file_id,"   \"warmup_packets\":%g,",WARMUP_PACKETS);
+				$fdisplay(file_id,"   \"measure_packets\":%g,",MEASURE_PACKETS);
+				$fdisplay(file_id,"   \"drain_packets\":%g,",DRAIN_PACKETS);
+	         $fdisplay(file_id,"   \"max_cycles\":%g,",`warmup_packets_num*10);
+	         $fdisplay(file_id,"   \"total_cycles\":%g,",f_time_finish-f_time_begin);
+	         $fdisplay(file_id,"   \"measure_cycles\":%g,",f_throughput_cycle_count);
+				$fdisplay(file_id,"   \"router_input_queue_depth\":%g,",`INPUT_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"PEnode_input_queue_depth\":%g,",NODE_QUEUE_DEPTH);
+				$fdisplay(file_id,"   \"create_ant_packet_period\":%g,",`CREATE_ANT_PERIOD);
+				$fdisplay(file_id,"   \"pheromone_table_value_width\":%g,",`PH_TABLE_DEPTH);
+				$fdisplay(file_id,"   \"result_dir\":\"results/j_10/t_hotspot/r_odd_even/s_aco/\",");
+				$fdisplay(file_id,"   \"routing\":\"odd_even\",");
+				$fdisplay(file_id,"   \"selection\":\"aco\",");
+				$fdisplay(file_id,"   \"traffic\":\"hotspot\",");
+				$fdisplay(file_id,"   \"packet_injection_rate\":%g,",PACKET_RATE);
+				$fdisplay(file_id,"   \"aco_packet_injection_rate\":%g,",ANT_PACKET_RATE);
+				$fdisplay(file_id,"   \"hotspot_packet_injection_rate\":%g",HOTSPOT_PACKET_RATE);
+	         $fdisplay(file_id,"}");
 				$fclose(file_id);
 			end
 			end
