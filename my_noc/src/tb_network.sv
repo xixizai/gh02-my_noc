@@ -634,30 +634,45 @@ module tb_network
                end
             end
          end
-         if(f_latency_o_packet_count_all != 0)begin
-            f_average_latency_all      = f_total_latency_all/f_latency_o_packet_count_all;
-         end else begin
+			
+         if(f_total_latency_all == 0)begin
+			   f_average_latency_all      = 0;
+         end else (f_latency_o_packet_count_all == 0)begin
             f_average_latency_all      = 10000000;
-         end
-         if(f_latency_o_packet_count_normal != 0)begin
-            f_average_latency_normal   = f_total_latency_normal/f_latency_o_packet_count_normal;
          end else begin
+            f_average_latency_all      = f_total_latency_all/f_latency_o_packet_count_all;
+			end
+			
+         if(f_total_latency_normal == 0)begin
+			   f_average_latency_normal   = 0;
+         end else (f_latency_o_packet_count_normal == 0)begin
             f_average_latency_normal   = 10000000;
-         end
-         if(f_latency_o_packet_count_ant != 0)begin
-            f_average_latency_ant      = f_total_latency_ant/f_latency_o_packet_count_ant;
          end else begin
+            f_average_latency_normal   = f_total_latency_normal/f_latency_o_packet_count_normal;
+         end
+			
+         if(f_total_latency_ant == 0)begin
+            f_average_latency_ant      = 0;
+         end else (f_latency_o_packet_count_ant == 0)begin
             f_average_latency_ant      = 10000000;
-         end
-         if(f_latency_o_packet_count_forward != 0)begin
-            f_average_latency_forward  = f_total_latency_forward/f_latency_o_packet_count_forward;
          end else begin
+            f_average_latency_ant      = f_total_latency_ant/f_latency_o_packet_count_ant;
+         end
+			
+         if(f_total_latency_forward == 0)begin
+			   f_average_latency_forward  = 0;
+         end else (f_latency_o_packet_count_forward == 0)begin
             f_average_latency_forward  = 10000000;
-         end
-         if(f_latency_o_packet_count_backward != 0)begin
-            f_average_latency_backward = f_total_latency_backward/f_latency_o_packet_count_backward;
          end else begin
+            f_average_latency_forward  = f_total_latency_forward/f_latency_o_packet_count_forward;
+         end
+			
+         if(f_total_latency_backward == 0)begin
+			   f_average_latency_backward = 0;
+         end else (f_latency_o_packet_count_backward == 0)begin
             f_average_latency_backward = 10000000;
+         end else begin
+            f_average_latency_backward = f_total_latency_backward/f_latency_o_packet_count_backward;
          end
       end
    end
